@@ -2,7 +2,11 @@
 // SABİTLER
 // ==========================================
 
-export const API_BASE = 'http://localhost:3001';
+// API base — production'da boş (Nginx aynı origin'den proxyler),
+// development'ta .env.local'dan veya default localhost:3001'den.
+export const API_BASE =
+  import.meta.env.VITE_API_BASE ??
+  (import.meta.env.DEV ? 'http://localhost:3001' : '');
 
 export const MONTHS_TR = [
     'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',

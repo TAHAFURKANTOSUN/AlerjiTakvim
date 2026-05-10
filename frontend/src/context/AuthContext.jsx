@@ -11,6 +11,19 @@ export function AuthProvider({ children }) {
         checkAuth();
     }, []);
 
+    // Global 401 event'ini dinle — apiRequest token süresi dolduğunda fırlatır.
+    // Bu sayede herhangi bir API çağrısı 401 alırsa kullanıcı otomatik
+    // logout edilip login ekranına yönlendirilir.
+    useEffect(() => {
+        function handleUnauthorized(e) {
+            console.warn('[Auth] Oturum sona erdi:', e.detail?.message || '401');
+            setUser(null);
+            // Token zaten apiRequest'te silindi; burada sadece state'i sıfırlıyoruz
+        }
+        window.addEventListener('auth:unauthorized', handleUnauthorized);
+        return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
+    }, []);
+
     async function checkAuth() {
         const token = localStorage.getItem('token');
         if (!token) {
