@@ -22,9 +22,22 @@ export async function apiRequest(endpoint, options = {}) {
         headers,
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
+        // 401 → token geçersiz veya süresi dolmuş. Eski token'ı temizle ve
+        // AuthContext'in dinlediği global bir event fırlat (decoupled yaklaşım).
+        // Login/register endpoint'lerinde 401 yanlış parola anlamına gelir,
+        // bu durumda logout tetiklemeyiz.
+        const isAuthEndpoint =
+            endpoint === '/api/login' || endpoint === '/api/register';
+        if (response.status === 401 && !isAuthEndpoint) {
+            localStorage.removeItem('token');
+            // CustomEvent — AuthProvider bunu yakalayıp user state'ini temizler
+            window.dispatchEvent(new CustomEvent('auth:unauthorized', {
+                detail: { endpoint, message: data?.error },
+            }));
+        }
         throw { status: response.status, ...data };
     }
 
@@ -78,6 +91,13 @@ export async function deleteAccount(password) {
 
 export async function fetchPollen(lat, lng, days = 5) {
     return await apiRequest(`/api/pollen?lat=${lat}&lng=${lng}&days=${days}`);
+}
+
+export async function sendChatMessage(message, locationName, lat, lng, userAllergens, history) {
+    return await apiRequest('/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message, locationName, lat, lng, userAllergens, history }),
+    });
 }
 
 export function logout() {

@@ -1,1 +1,63 @@
-.env #env dosyasını yoksay
+# ============================================================
+# .gitignore — sunucuya GİTMEYECEK dosyalar
+# ============================================================
+
+# ─── Sırlar (asla repo'ya girmez) ───
+.env
+.env.local
+.env.production
+.env.development.local
+**/.env
+**/.env.local
+**/.env.production
+
+# ─── Bağımlılıklar (sunucuda npm install üretir) ───
+node_modules/
+**/node_modules/
+
+# ─── Build çıktıları (sunucuda npm run build üretir) ───
+dist/
+build/
+**/dist/
+**/build/
+
+# ─── RAG vector store (sunucuda build-index.js üretir, ~2.4 MB) ───
+data/vector-store.json
+data/vector-store.json.bak
+
+# ─── PM2 logları ───
+logs/
+*.log
+pm2-debug.log
+.pm2/
+
+# ─── HuggingFace model cache (büyük, yeniden indirilir) ───
+hf-cache/
+.cache/
+
+# ─── Vite ───
+.vite/
+
+# ─── Editor / OS ───
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+!.vscode/settings.json.example
+.idea/
+
+# ─── npm/pnpm ───
+.npm/
+.pnpm-store/
+yarn-error.log
+npm-debug.log*
+
+# ─── Geçici / yedek ───
+*.bak
+*.tmp
+.~lock.*
+
+# ─── Test coverage ───
+coverage/
+.nyc_output/

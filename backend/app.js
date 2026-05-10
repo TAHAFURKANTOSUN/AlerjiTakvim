@@ -1,15 +1,22 @@
 // ==========================================
 // ALERJİ TAKİP BACKEND - Express.js Sunucusu
-// Auth + Pollen API Proxy
+// Auth + Pollen API Proxy + Groq Chat
 // ==========================================
 
-require('dotenv').config();
+const path = require('path');
+// .env'yi her zaman backend klasöründen yükle (cwd fark etmez)
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
-const path = require('path');
+const Groq = require('groq-sdk');
+const groqKeyManager = require('./groqKeyManager');
+
+// RAG + Pollen araçları (chat endpoint'i için)
+const { retrieveRelevantChunks } = require('../rag/retriever');
+const { fetchPollenSummary, getPollenData } = require('./tools/pollen');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -318,40 +325,208 @@ app.delete('/api/account', authMiddleware, async (req, res) => {
 });
 
 // ==========================================
-// POLLEN API PROXY
+// POLLEN API DURUM (anahtarların durumu — debug/monitoring)
+// auth gerekli (anahtar maskelenmiş bilgisi sızmasın)
 // ==========================================
-app.get('/api/pollen', authMiddleware, async (req, res) => {
+app.get('/api/pollen/status', authMiddleware, (req, res) => {
+    const { getKeyManagerStatus } = require('./tools/pollenProviders/google');
+    res.json(getKeyManagerStatus());
+});
+
+// ==========================================
+// POLLEN API PROXY
+// PUBLIC — auth GEREKMEZ:
+//   • Polen verisi hassas değil (Google/Open-Meteo zaten halka açık)
+//   • API anahtarları sunucu tarafında kalıyor
+//   • Login olmamış kullanıcı da haritayı görebilsin
+//   • Kotaya karşı zaten çoklu key + Open-Meteo fallback var
+// ==========================================
+app.get('/api/pollen', async (req, res) => {
     try {
         const { lat, lng, days = 5 } = req.query;
-        
+
         if (!lat || !lng) {
             return res.status(400).json({ error: 'lat ve lng parametreleri gerekli' });
         }
-        
-        if (!POLLEN_API_KEY) {
-            return res.status(500).json({ error: 'Pollen API key yapılandırılmamış' });
-        }
-        
-        const url = `https://pollen.googleapis.com/v1/forecast:lookup?key=${POLLEN_API_KEY}&location.latitude=${lat}&location.longitude=${lng}&days=${days}&languageCode=tr&plantsDescription=true`;
-        
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-            const errData = await response.json().catch(() => null);
-            if (response.status === 403) {
-                return res.status(502).json({ error: 'Pollen API anahtarı geçersiz veya API etkinleştirilmemiş' });
-            }
-            if (response.status === 429) {
-                return res.status(429).json({ error: 'API istek limiti aşıldı' });
-            }
-            return res.status(502).json({ error: errData?.error?.message || `API hatası: ${response.status}` });
-        }
-        
-        const data = await response.json();
+
+        // Orchestrator: Google → başarısızsa otomatik Open-Meteo
+        const data = await getPollenData({
+            lat: parseFloat(lat),
+            lng: parseFloat(lng),
+            days: parseInt(days, 10) || 1,
+        });
+
+        // Hangi sağlayıcıdan geldiğini header'a koy (debug + frontend dileğine göre)
+        res.set('X-Pollen-Source', data._source || 'unknown');
         res.json(data);
     } catch (err) {
-        console.error('Pollen proxy error:', err);
-        res.status(500).json({ error: 'Polen verileri alınırken hata oluştu' });
+        console.error('Pollen proxy error:', err.message);
+        res.status(502).json({
+            error: 'Polen verileri alınamadı (tüm sağlayıcılar başarısız)',
+        });
+    }
+});
+
+// ==========================================
+// CHATBOT PROXY — Groq (model-priority fallback)
+// İlk model tüm keylerle denenir, bittikçe sıradaki
+// modele geçilir.
+// ==========================================
+
+// Groq ile sohbet isteği gönder (tek deneme)
+async function tryGroqChat(apiKey, model, systemPrompt, messages) {
+    const client = new Groq({ apiKey });
+
+    const groqMessages = [
+        { role: 'system', content: systemPrompt },
+        ...messages,
+    ];
+
+    const completion = await client.chat.completions.create({
+        model,
+        messages: groqMessages,
+        temperature: 0.4, // Dil kaymasını önlemek için daha düşük (önceden 0.7 idi)
+        max_tokens: 512,
+    });
+
+    return completion.choices[0]?.message?.content || '';
+}
+
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { message, locationName, lat, lng, userAllergens, history } = req.body;
+
+        if (!message || typeof message !== 'string') {
+            return res.status(400).json({ error: 'Mesaj gerekli' });
+        }
+
+        // ══════════════════════════════════════════════════════════
+        // RAG + POLLEN (paralel) — prompt'a enjekte edeceğimiz veri
+        // ══════════════════════════════════════════════════════════
+        const [ragResult, pollenResult] = await Promise.allSettled([
+            retrieveRelevantChunks(message, 3),
+            fetchPollenSummary({ lat, lng, locationName }),
+        ]);
+
+        const chunks = ragResult.status === 'fulfilled' ? ragResult.value : [];
+        const livePollen = pollenResult.status === 'fulfilled' ? pollenResult.value : null;
+
+        if (ragResult.status === 'rejected') {
+            console.warn('[Chat] RAG retrieval başarısız:', ragResult.reason?.message);
+        }
+
+        // Kaynak bloğu (bilimsel makaleler)
+        const contextBlock = chunks.length
+            ? `\n\n## 📚 İLGİLİ BİLİMSEL KAYNAKLAR\n` +
+              chunks.map((c, i) =>
+                  `[${i + 1}] ${c.source} (s.${c.page}) — benzerlik ${c.score.toFixed(2)}\n"${c.text.trim()}"`
+              ).join('\n\n')
+            : '';
+
+        // Anlık polen bloğu
+        const pollenBlock = livePollen
+            ? `\n\n## 🌱 ANLIK POLEN VERİLERİ (bugün)\n${livePollen}`
+            : '';
+
+        // Sistem promptu oluştur
+        const allergenList = (userAllergens || []).join(', ') || 'belirtilmemiş';
+        const systemPrompt = `# DİL KURALI (EN ÖNCELİKLİ)
+SEN SADECE TÜRKÇE YANIT VEREN BİR ASİSTANSIN.
+Kaynakların veya kullanıcı mesajının dili ne olursa olsun, cevabın HER ZAMAN TÜRKÇE olmalı.
+İngilizce bir kaynaktan bilgi alırsan, onu önce Türkçe'ye çevir, sonra kullan.
+Tek kelime bile İngilizce yazma (bilimsel tür adları hariç: ör. "Olea europaea" kalabilir).
+
+# KİMLİK
+Sen bir polen ve alerji asistanısın. Adın "Polen Asistanı".
+Kullanıcının bulunduğu konum: ${locationName || 'belirtilmemiş'}
+Kullanıcının alerjik olduğu polenler: ${allergenList}
+
+# GÖREV
+- Polen ve alerji hakkında bilgilendirici, kısa ve net yanıtlar ver
+- Kullanıcının alerjilerine özel tavsiyeler sun
+- Mevsimsel polen tahmini hakkında bilgi ver
+- Korunma yöntemleri öner
+- Yanıtlarını 2-3 cümle ile sınırlı tut, çok uzun yazma
+- Emoji kullan, samimi ol
+- Tıbbi teşhis koyma, doktora yönlendir
+${contextBlock}
+${pollenBlock}
+
+# YANIT KURALLARI (KRİTİK — HALLÜSİNASYON YOK)
+- "ANLIK POLEN VERİLERİ" bloğu mevcutsa: kullanıcının "bugün maske takmalı mıyım?", "polen durumu nasıl?", "risk yüksek mi?" gibi konum-spesifik tüm soruları SADECE bu blokta yazılı sayılara dayanarak yanıtla. Tahmin yürütme, genelleme yapma, ezbere konuşma.
+- Verilen indeks değerlerini somutlaştır:
+    0/5 = yok, 1/5 = çok düşük, 2/5 = düşük, 3/5 = orta, 4/5 = yüksek, 5/5 = çok yüksek.
+- Maske/ev tavsiyesi verirken: kullanıcının ALERJİK OLDUĞU polenlerin (yukarıda listeli) bugünkü değerine bak; yüksekse maske/iç mekan öner, düşükse rahat olabileceğini söyle.
+- "ANLIK POLEN VERİLERİ" bloğu YOKSA (veri alınamadıysa): "Şu anda \${locationName || 'bu konum'} için canlı polen verisi alamıyorum, biraz sonra tekrar deneyebilirsiniz" de — uydurma sayı verme.
+- "BİLİMSEL KAYNAKLAR" bloğu varsa: tıbbi/biyolojik genel sorularda öncelikle ona dayandır. İngilizce metinden alıntı yaparken Türkçe'ye çevir; bilgi aldığında (Kaynak [1]) şeklinde referans ver.
+- Kaynaklarda VE canlı veride hiç olmayan bir bilgi soruluyorsa: "Bu konuda elimde net veri yok" de — uydurma.
+- İlaç ismi önerme, dozaj verme, teşhis koyma. Ciddi belirtilerde doktora yönlendir.
+
+# SON HATIRLATMA
+Cevabın TAMAMEN TÜRKÇE olmalı. İngilizce yazmak yasak.`;
+
+        console.log(`[Chat] "${message.slice(0, 60)}..." — RAG: ${chunks.length} kaynak, Pollen: ${livePollen ? 'var' : 'yok'}`);
+
+        // Mesaj geçmişini hazırla (Groq formatı — OpenAI uyumlu)
+        const groqHistory = (history || []).map(msg => ({
+            role: msg.from === 'user' ? 'user' : 'assistant',
+            content: msg.text,
+        }));
+
+        // Son kullanıcı mesajına dil kilidi ekle — modelin prompt'un sonuna en çok
+        // dikkat ettiği bilindiğinden "dil kayması" sorununa en etkili çözüm bu.
+        const userMessageWithLangLock =
+            `${message}\n\n(Lütfen cevabı SADECE TÜRKÇE yaz. Kaynaklar İngilizce olsa bile çevirip kullan.)`;
+        groqHistory.push({ role: 'user', content: userMessageWithLangLock });
+
+        // ── GROQ FALLBACK DÖNGÜSÜ ──
+        const MAX_RETRIES = (groqKeyManager.getStatus().totalCombinations) || 1;
+        let lastError = null;
+
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            const config = groqKeyManager.getActiveConfig();
+            if (!config) break; // Tüm keyler/modeller tükendi
+
+            try {
+                const maskedKey = config.apiKey.substring(0, 8) + '...';
+                console.log(`[Chat] Groq deneniyor: model=${config.model} key=${maskedKey} (deneme ${attempt + 1})`);
+
+                const reply = await tryGroqChat(config.apiKey, config.model, systemPrompt, groqHistory);
+
+                if (reply) {
+                    return res.json({
+                        reply,
+                        provider: 'groq',
+                        model: config.model,
+                    });
+                }
+            } catch (err) {
+                lastError = err;
+                const status = err?.status || err?.statusCode || err?.error?.status_code || 0;
+
+                if (status === 429 || status === 401 || status === 403) {
+                    // Rate limit veya auth hatası → bu key+model blokla, sonraki dene
+                    groqKeyManager.markBlocked(config.apiKey, config.model, status);
+                    continue;
+                }
+
+                // Bilinmeyen hata → logla, sonraki dene
+                console.error(`[Chat] Groq hatası (${status}):`, err.message || err);
+                groqKeyManager.markBlocked(config.apiKey, config.model, status || 500);
+                continue;
+            }
+        }
+
+        // Tüm Groq keyler/modeller tükendi
+        const status = groqKeyManager.getStatus();
+        console.error(`[Chat] Tüm Groq keyler/modeller tükendi. Bloklanmış: ${status.blockedCount}/${status.totalCombinations}`);
+        res.status(502).json({
+            error: 'Chatbot şu anda yanıt veremiyor. Tüm API anahtarları sınıra ulaştı. Lütfen birkaç dakika sonra tekrar deneyin.',
+            status,
+        });
+    } catch (err) {
+        console.error('Chat endpoint error:', err);
+        res.status(500).json({ error: 'Chatbot yanıt veremedi' });
     }
 });
 
@@ -360,5 +535,30 @@ app.get('/api/pollen', authMiddleware, async (req, res) => {
 // ==========================================
 app.listen(PORT, () => {
     console.log(`🌿 Alerji Takip Backend çalışıyor: http://localhost:${PORT}`);
-    console.log(`   Pollen API Key: ${POLLEN_API_KEY ? '✅ Yapılandırılmış' : '❌ Eksik'}`);
+
+    // Pollen sağlayıcı durumu
+    const { getKeyManagerStatus } = require('./tools/pollenProviders/google');
+    const km = getKeyManagerStatus();
+    console.log(`   Pollen Sağlayıcıları:`);
+    if (km.totalKeys > 0) {
+        console.log(`     • Google Pollen API: ✅ ${km.totalKeys} anahtar yüklü (aktif: #${km.activeKeyIndex + 1})`);
+    } else {
+        console.log(`     • Google Pollen API: ⚠️  Anahtar yok (Open-Meteo fallback'e düşülecek)`);
+    }
+    console.log(`     • Open-Meteo (CAMS Europe): ✅ Hazır (anahtar gerekmez, son çare fallback)`);
+    const groqStatus = groqKeyManager.getStatus();
+    console.log(`   Groq API Keys:  ${groqStatus.totalKeys > 0 ? `✅ ${groqStatus.totalKeys} key, ${groqStatus.totalModels} model` : '❌ Eksik'}`);
+    if (groqStatus.totalKeys > 0) {
+        console.log(`   Groq Model Sırası: ${groqKeyManager.models.join(' → ')}`);
+    }
+
+    // RAG indeksi hazır mı? (ilk chat isteğinde zaten lazy load olur, burada sadece bilgilendirme)
+    const fsSync = require('fs');
+    const indexPath = path.join(__dirname, '..', 'data', 'vector-store.json');
+    if (fsSync.existsSync(indexPath)) {
+        const sizeMB = (fsSync.statSync(indexPath).size / 1024 / 1024).toFixed(1);
+        console.log(`   RAG Indeks:     ✅ ${indexPath} (${sizeMB} MB)`);
+    } else {
+        console.log(`   RAG Indeks:     ❌ Yok. 'node rag/build-index.js' ile oluştur.`);
+    }
 });
