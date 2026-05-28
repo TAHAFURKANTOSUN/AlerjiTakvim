@@ -38,6 +38,12 @@ export async function apiRequest(endpoint, options = {}) {
                 detail: { endpoint, message: data?.error },
             }));
         }
+        // 429 + kota → UsageProvider bunu yakalayıp kayıt/premium modalını açar.
+        if (response.status === 429 && data?.code === 'QUOTA_EXCEEDED') {
+            window.dispatchEvent(new CustomEvent('quota:exceeded', {
+                detail: { endpoint, ...data },
+            }));
+        }
         throw { status: response.status, ...data };
     }
 
@@ -90,14 +96,43 @@ export async function deleteAccount(password) {
 }
 
 export async function fetchPollen(lat, lng, days = 5) {
-    return await apiRequest(`/api/pollen?lat=${lat}&lng=${lng}&days=${days}`);
+    const data = await apiRequest(`/api/pollen?lat=${lat}&lng=${lng}&days=${days}`);
+    // Kota sayacı değişti → header rozetini tazele.
+    window.dispatchEvent(new CustomEvent('usage:changed'));
+    return data;
 }
 
 export async function sendChatMessage(message, locationName, lat, lng, userAllergens, history) {
-    return await apiRequest('/api/chat', {
+    const data = await apiRequest('/api/chat', {
         method: 'POST',
         body: JSON.stringify({ message, locationName, lat, lng, userAllergens, history }),
     });
+    window.dispatchEvent(new CustomEvent('usage:changed'));
+    return data;
+}
+
+// ── Üyelik / kota ──
+export async function getUsage() {
+    return await apiRequest('/api/usage');
+}
+
+export async function getPlans() {
+    return await apiRequest('/api/membership/plans');
+}
+
+export async function startCheckout() {
+    return await apiRequest('/api/membership/checkout', { method: 'POST' });
+}
+
+export async function confirmMembership(paymentId, token) {
+    return await apiRequest('/api/membership/confirm', {
+        method: 'POST',
+        body: JSON.stringify({ paymentId, token }),
+    });
+}
+
+export async function cancelMembership() {
+    return await apiRequest('/api/membership/cancel', { method: 'POST' });
 }
 
 export function logout() {

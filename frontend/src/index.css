@@ -6,63 +6,64 @@
    ========================================== */
 :root,
 [data-theme="light"] {
-  /* Yüzeyler */
-  --bg-base: #f5f1e8;            /* warm cream */
-  --bg-subtle: #ede7d8;          /* deeper cream for contrast */
-  --bg-surface: #ffffff;          /* card surface */
-  --bg-card: #ffffff;
-  --bg-card-alt: #fbf8ef;         /* tinted surface */
-  --bg-input: #fbf8ef;
-  --bg-header: rgba(245, 241, 232, 0.85);
+  /* Yüzeyler — sıcak, katmanlı (klinik beyaz yerine sıcak beyaz) */
+  --bg-base: #f1ebdd;             /* warm cream */
+  --bg-subtle: #e9e1cd;           /* deeper cream for contrast */
+  --bg-gradient-top: #f7f2e8;     /* gövdenin üstünde nazik aydınlanma */
+  --bg-surface: #fffdf7;          /* warm white — klinik #fff değil */
+  --bg-card: #fffdf7;
+  --bg-card-alt: #f6f0e3;         /* tinted surface */
+  --bg-input: #f6f0e3;
+  --bg-header: rgba(241, 235, 221, 0.80);
 
-  /* Kenarlıklar */
-  --border-soft: #e6ddcb;
-  --border-medium: #d5c9b2;
-  --border-strong: #c7b89d;
+  /* Kenarlıklar — sıcak, net hiyerarşi */
+  --border-soft: #e7dec9;
+  --border-medium: #d6c9af;
+  --border-strong: #c4b393;
   --glass-border: var(--border-soft); /* legacy alias */
   --glass-border-hover: var(--border-medium);
 
-  /* Renk — yeşil aile */
-  --green-50: #f2f6ee;
-  --green-100: #e5eedd;
-  --green-200: #c9dcba;
-  --green-300: #a7c690;
-  --green-500: #6f9659;            /* primary sage */
-  --green-600: #567a44;
-  --green-700: #3f5a30;
+  /* Renk — yeşil aile (daha derin & zengin) */
+  --green-50: #eef4e7;
+  --green-100: #e0ebd3;
+  --green-200: #c5d9b1;
+  --green-300: #9fc086;
+  --green-500: #5f8a48;            /* primary sage — daha derin */
+  --green-600: #4d7339;
+  --green-700: #38562a;
 
   /* Vurgu / aksan */
-  --accent-primary: #6f9659;
-  --accent-primary-hover: #5e8349;
-  --accent-primary-soft: #eaf0e0;
-  --accent-primary-border: #cde0b8;
-  --accent-moss: #8aa876;
-  --accent-warm: #c4a15a;          /* altın bej — sekonder */
+  --accent-primary: #5f8a48;
+  --accent-primary-hover: #517a3c;
+  --accent-primary-soft: #e8f0dd;
+  --accent-primary-border: #c6dab0;
+  --accent-moss: #82a06d;
+  --accent-warm: #bd9a4e;          /* altın bej — sekonder */
 
   /* Ambient body blobs */
-  --ambient-1: rgba(111, 150, 89, 0.05);
-  --ambient-2: rgba(196, 161, 90, 0.04);
+  --ambient-1: rgba(95, 138, 72, 0.06);
+  --ambient-2: rgba(189, 154, 78, 0.05);
 
   /* Legacy alias'lar (bileşenlerin var(--accent-violet) gibi ref'lerini kırmamak için) */
   --accent-violet: var(--accent-primary);
   --accent-blue: var(--accent-moss);
   --accent-cyan: var(--accent-warm);
   --accent-emerald: var(--accent-primary);
-  --accent-gradient: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-moss) 60%, var(--accent-warm) 100%);
+  --accent-gradient: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-moss) 55%, var(--accent-warm) 100%);
 
-  /* Metin */
-  --text-primary: #2d3a2c;         /* deep forest */
-  --text-secondary: #566654;
-  --text-muted: #8a9487;
+  /* Metin — daha net hiyerarşi */
+  --text-primary: #283220;         /* deep forest */
+  --text-secondary: #525f49;
+  --text-muted: #8c917f;
   --text-on-accent: #ffffff;
 
   /* Risk seviyeleri — yumuşak, doğal tonlar */
-  --risk-low: #6f9659;
-  --risk-low-bg: rgba(111, 150, 89, 0.14);
-  --risk-medium: #c9a14a;
-  --risk-medium-bg: rgba(201, 161, 74, 0.14);
-  --risk-high: #c4664f;
-  --risk-high-bg: rgba(196, 102, 79, 0.14);
+  --risk-low: #5f8a48;
+  --risk-low-bg: rgba(95, 138, 72, 0.14);
+  --risk-medium: #c39a3f;
+  --risk-medium-bg: rgba(195, 154, 63, 0.15);
+  --risk-high: #c05f48;
+  --risk-high-bg: rgba(192, 95, 72, 0.14);
 
   /* Radius */
   --radius-xs: 6px;
@@ -72,19 +73,21 @@
   --radius-xl: 22px;
   --radius-2xl: 28px;
 
-  /* Gölgeler — sıcak, yumuşak */
-  --shadow-xs: 0 1px 2px rgba(74, 58, 34, 0.04);
-  --shadow-sm: 0 2px 8px rgba(74, 58, 34, 0.06);
-  --shadow-md: 0 6px 18px rgba(74, 58, 34, 0.07);
-  --shadow-lg: 0 14px 36px rgba(74, 58, 34, 0.10);
+  /* Gölgeler — katmanlı (contact + ambient), sıcak tonlu */
+  --shadow-xs: 0 1px 1px rgba(58, 46, 26, 0.05);
+  --shadow-sm: 0 1px 2px rgba(58, 46, 26, 0.05), 0 2px 6px rgba(58, 46, 26, 0.05);
+  --shadow-md: 0 1px 2px rgba(58, 46, 26, 0.05), 0 8px 20px rgba(58, 46, 26, 0.08);
+  --shadow-lg: 0 2px 6px rgba(58, 46, 26, 0.06), 0 20px 44px rgba(58, 46, 26, 0.13);
   --shadow-card: var(--shadow-sm);
-  --shadow-glow: 0 0 0 4px rgba(111, 150, 89, 0.12);
+  --shadow-glow: 0 0 0 4px rgba(95, 138, 72, 0.13);
+  /* Yüzey üst-parlaklığı — kartlara hafif "kabarık", premium his */
+  --surface-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
   /* Chart grid */
-  --chart-grid: rgba(74, 58, 34, 0.06);
-  --chart-axis: rgba(74, 58, 34, 0.08);
-  --chart-tick: #8a9487;
-  --chart-active-dot-stroke: #ffffff;
+  --chart-grid: rgba(58, 46, 26, 0.06);
+  --chart-axis: rgba(58, 46, 26, 0.09);
+  --chart-tick: #8c917f;
+  --chart-active-dot-stroke: #fffdf7;
 
   /* Transitions */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -100,6 +103,7 @@
   /* Yüzeyler — koyu orman yeşili tonları */
   --bg-base: #161914;
   --bg-subtle: #1d211b;
+  --bg-gradient-top: #1c211a;     /* gövde üstünde nazik aydınlanma */
   --bg-surface: #21251e;
   --bg-card: #21251e;
   --bg-card-alt: #262a22;
@@ -161,6 +165,8 @@
   --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.55);
   --shadow-card: var(--shadow-sm);
   --shadow-glow: 0 0 0 4px rgba(156, 194, 129, 0.18);
+  /* Yüzey üst-parlaklığı — karanlıkta çok hafif */
+  --surface-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 
   /* Chart grid */
   --chart-grid: rgba(255, 255, 255, 0.05);
@@ -190,11 +196,14 @@ html, body {
 
 body {
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: var(--bg-base);
+  background:
+    linear-gradient(180deg, var(--bg-gradient-top) 0%, var(--bg-base) 42%, var(--bg-base) 100%);
+  background-attachment: fixed;
   color: var(--text-primary);
   min-height: 100vh;
   overflow-x: hidden;
   font-feature-settings: "cv11", "ss01";
+  letter-spacing: -0.006em;
   transition: background-color 0.35s var(--ease-out), color 0.35s var(--ease-out);
 }
 
@@ -206,10 +215,22 @@ body::before {
   background:
     radial-gradient(ellipse 60% 40% at 15% 10%, var(--ambient-1) 0%, transparent 60%),
     radial-gradient(ellipse 50% 40% at 90% 85%, var(--ambient-2) 0%, transparent 60%);
-  z-index: -1;
+  z-index: -2;
   pointer-events: none;
   transition: background 0.35s var(--ease-out);
 }
+
+/* İnce film greni — "düşünülmüş", organik doku (çok hafif). */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+[data-theme="dark"] body::after { opacity: 0.055; }
 
 /* ==========================================
    SCROLLBAR
@@ -1278,7 +1299,7 @@ body::before {
   animation: fadeInUp 0.5s var(--ease-out) both;
   position: relative;
   overflow: hidden;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--surface-highlight), var(--shadow-sm);
   transition: background-color 0.35s var(--ease-out), border-color 0.35s var(--ease-out), box-shadow 0.35s var(--ease-out);
 }
 
@@ -1573,7 +1594,7 @@ body::before {
   border-radius: var(--radius-xl);
   padding: 1.25rem;
   animation: fadeInUp 0.5s var(--ease-out) 0.1s both;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--surface-highlight), var(--shadow-sm);
   transition: background-color 0.35s var(--ease-out), border-color 0.35s var(--ease-out);
 }
 

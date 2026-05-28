@@ -58,9 +58,15 @@ export default function Chatbot() {
       setMessages(prev => [...prev, { from: 'bot', text: data.reply }]);
     } catch (err) {
       console.error('Chat error:', err);
+      const isQuota = err?.status === 429 || err?.code === 'QUOTA_EXCEEDED';
+      const quotaText = err?.action === 'upgrade'
+        ? '⭐ Günlük sohbet hakkınız doldu. Sınırsız sohbet için Premium’a geçebilirsiniz.'
+        : '🔒 Günlük misafir sohbet hakkınız doldu. Devam etmek için ücretsiz kayıt olun.';
       setMessages(prev => [...prev, {
         from: 'bot',
-        text: '❌ Yanıt alınamadı. Lütfen tekrar deneyin veya internet bağlantınızı kontrol edin.'
+        text: isQuota
+          ? quotaText
+          : '❌ Yanıt alınamadı. Lütfen tekrar deneyin veya internet bağlantınızı kontrol edin.'
       }]);
     }
     setIsTyping(false);
