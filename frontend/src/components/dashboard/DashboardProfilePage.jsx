@@ -1,14 +1,26 @@
 import { usePollen } from '../../context/PollenContext';
+import { useAuth } from '../../context/AuthContext';
+import { useUsage } from '../../context/UsageContext';
+import '../membership/membership.css';
 
 const AVATAR_OPTIONS = ['👤', '👩', '👨', '👧', '🧑', '👩‍⚕️', '🌿', '🌸', '🌺', '🦋', '🌻', '🍀'];
 
 export default function DashboardProfilePage({ onClose }) {
   const {
     userAllergens, toggleAllergen, allergenOptions,
-    userName, userAvatar, setUserName, setUserAvatar,
+    userAvatar, setUserAvatar,
   } = usePollen();
+  const { user, updateUserProfile } = useAuth();
+  const { openLogin } = useUsage();
 
   const totalSelected = userAllergens.length;
+  const displayAvatar = user?.avatar || userAvatar || '👤';
+
+  // Avatar seçimi: misafirde yerel, üyede hesaba kaydedilir.
+  function handleAvatar(opt) {
+    setUserAvatar(opt);
+    if (user) updateUserProfile({ avatar: opt }).catch(() => {});
+  }
 
   return (
     <div className="profile-fullpage animate-fade-in">
@@ -31,39 +43,76 @@ export default function DashboardProfilePage({ onClose }) {
             <h3>Kişisel Bilgiler</h3>
           </div>
           <div className="profile-fp-card-body">
-            {/* Current avatar display */}
+            {/* Kimlik — kullanıcı kim olduğunu hemen görsün */}
             <div className="profile-fp-avatar-display">
-              <div className="profile-fp-avatar-large">{userAvatar}</div>
-              <div className="profile-fp-avatar-name">{userName || 'Kullanıcı'}</div>
-            </div>
-
-            {/* Name input */}
-            <div className="profile-fp-field">
-              <label>İsim</label>
-              <input
-                type="text"
-                value={userName}
-                onChange={(e) => setUserName(e.target.value)}
-                placeholder="Adınızı girin..."
-                className="profile-fp-input"
-              />
-            </div>
-
-            {/* Avatar picker */}
-            <div className="profile-fp-field">
-              <label>Avatar</label>
-              <div className="profile-fp-avatar-grid">
-                {AVATAR_OPTIONS.map(opt => (
-                  <button
-                    key={opt}
-                    className={`profile-fp-avatar-option ${userAvatar === opt ? 'selected' : ''}`}
-                    onClick={() => setUserAvatar(opt)}
-                  >
-                    {opt}
-                  </button>
-                ))}
+              <div className="profile-fp-avatar-large">{displayAvatar}</div>
+              <div className="profile-fp-avatar-name">
+                {user ? `Hoş geldiniz, ${user.name}` : 'Misafir kullanıcı'}
               </div>
+              {user && (
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                  Giriş yapan: {user.email}
+                </div>
+              )}
+              {user && (
+                <span
+                  className={`mb-plan-badge ${user.plan === 'premium' ? 'premium' : 'free'}`}
+                  style={{ marginTop: 8 }}
+                >
+                  {user.plan === 'premium' ? 'Premium üye' : 'Ücretsiz üye'}
+                </span>
+              )}
             </div>
+
+            {user ? (
+              <>
+                {/* Kullanıcı adı — salt okunur kimlik (değiştirilemez) */}
+                <div className="profile-fp-field">
+                  <label>Kullanıcı adı</label>
+                  <input
+                    type="text"
+                    value={user.name}
+                    readOnly
+                    disabled
+                    aria-readonly="true"
+                    className="profile-fp-input"
+                    style={{ opacity: 0.65, cursor: 'not-allowed' }}
+                  />
+                  <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6 }}>
+                    🔒 Bu, hesap kimliğinizdir ve değiştirilemez.
+                  </p>
+                </div>
+
+                {/* Avatar — kişiselleştirme (değiştirilebilir) */}
+                <div className="profile-fp-field">
+                  <label>Avatar</label>
+                  <div className="profile-fp-avatar-grid">
+                    {AVATAR_OPTIONS.map(opt => (
+                      <button
+                        key={opt}
+                        className={`profile-fp-avatar-option ${displayAvatar === opt ? 'selected' : ''}`}
+                        onClick={() => handleAvatar(opt)}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="profile-fp-info">
+                <span>👋</span>
+                <div>
+                  <p className="profile-fp-info-title">Misafir olarak geziniyorsunuz</p>
+                  <p className="profile-fp-info-text">
+                    Kişisel kimliğiniz ve daha yüksek günlük kullanım hakları için giriş yapın.
+                  </p>
+                  <button className="mb-login-btn" style={{ marginTop: 10 }} onClick={openLogin}>
+                    Giriş yap / Kayıt ol
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

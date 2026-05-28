@@ -9,10 +9,17 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const fs = require('fs');
 const Groq = require('groq-sdk');
 const groqKeyManager = require('./groqKeyManager');
+
+// ── Üyelik / kota altyapısı (PostgreSQL) ──
+const db = require('./db/pool');
+const usersService = require('./services/users');
+const usageService = require('./services/usage');
+const { authMiddleware, optionalAuth, signToken } = require('./middleware/auth');
+const { enforceQuota, getClientIp } = require('./middleware/quota');
+const { getPlan } = require('./config/plans');
+const membershipRouter = require('./routes/membership');
 
 // RAG + Pollen araçları (chat endpoint'i için)
 const { retrieveRelevantChunks } = require('../rag/retriever');
@@ -20,61 +27,38 @@ const { fetchPollenSummary, getPollenData } = require('./tools/pollen');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key';
 const POLLEN_API_KEY = process.env.POLLEN_API_KEY;
-const USERS_FILE = path.join(__dirname, 'data', 'users.json');
 
 // ==========================================
 // MIDDLEWARE
 // ==========================================
 app.use(cors());
 app.use(express.json());
+// Nginx/proxy arkasında gerçek istemci IP'sini al (misafir kota takibi için)
+app.set('trust proxy', true);
 
 // ==========================================
-// YARDIMCI FONKSİYONLAR
+// KÖK & SAĞLIK KONTROLÜ
+// Bu bir API sunucusudur; web arayüzünü SERVE ETMEZ.
+// Arayüz için frontend ayrı çalışır:  cd frontend && npm run dev
+// (Üretimde Nginx '/' için derlenmiş frontend'i, '/api' için bunu sunar.)
 // ==========================================
-function readUsers() {
-    try {
-        const data = fs.readFileSync(USERS_FILE, 'utf8');
-        return JSON.parse(data);
-    } catch (err) {
-        return [];
-    }
-}
+app.get('/', (req, res) => {
+    res.json({
+        status: 'ok',
+        service: 'Alerji Takip API',
+        hint: 'Bu bir API sunucusudur. Web arayüzü için frontend klasöründe `npm run dev` çalıştırın.',
+    });
+});
 
-function writeUsers(users) {
-    const dir = path.dirname(USERS_FILE);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
-}
+app.get('/api/health', async (req, res) => {
+    let database = false;
+    try { await db.ping(); database = true; } catch { /* DB kapalı/erişilemez */ }
+    res.status(database ? 200 : 503).json({ status: 'ok', database });
+});
 
-function generateToken(user) {
-    return jwt.sign(
-        { id: user.id, email: user.email, name: user.name },
-        JWT_SECRET,
-        { expiresIn: '7d' }
-    );
-}
-
-// ==========================================
-// AUTH MIDDLEWARE
-// ==========================================
-function authMiddleware(req, res, next) {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Yetkilendirme gerekli' });
-    }
-    const token = authHeader.split(' ')[1];
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded;
-        next();
-    } catch (err) {
-        return res.status(401).json({ error: 'Geçersiz veya süresi dolmuş token' });
-    }
-}
+// Auth, token üretimi ve kullanıcı saklama artık modüllere taşındı:
+//   middleware/auth.js · services/users.js · db/pool.js
 
 // ==========================================
 // VALIDASYON
@@ -128,54 +112,24 @@ function validateLogin(email, password) {
 app.post('/api/register', async (req, res) => {
     try {
         const { name, email, password, passwordConfirm } = req.body;
-        
+
         // Validasyon
         const errors = validateRegister(name, email, password, passwordConfirm);
         if (errors.length > 0) {
             return res.status(400).json({ error: errors[0], errors });
         }
-        
-        const users = readUsers();
-        
+
         // E-posta kontrol
-        if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) {
+        const existing = await usersService.findByEmail(email);
+        if (existing) {
             return res.status(400).json({ error: 'Bu e-posta adresi zaten kayıtlı' });
         }
-        
-        // Şifre hash
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-        
-        // Kullanıcı oluştur
-        const newUser = {
-            id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
-            name: name.trim(),
-            email: email.toLowerCase().trim(),
-            password: hashedPassword,
-            avatar: '👤',
-            allergies: [],
-            favorites: [],
-            createdAt: new Date().toISOString()
-        };
-        
-        users.push(newUser);
-        writeUsers(users);
-        
-        // Token oluştur
-        const token = generateToken(newUser);
-        
-        res.status(201).json({
-            message: 'Kayıt başarılı',
-            token,
-            user: {
-                id: newUser.id,
-                name: newUser.name,
-                email: newUser.email,
-                avatar: newUser.avatar,
-                allergies: newUser.allergies,
-                favorites: newUser.favorites
-            }
-        });
+
+        const created = await usersService.createUser({ name, email, password });
+        const user = usersService.publicUser(created);
+        const token = signToken(user);
+
+        res.status(201).json({ message: 'Kayıt başarılı', token, user });
     } catch (err) {
         console.error('Register error:', err);
         res.status(500).json({ error: 'Sunucu hatası' });
@@ -186,39 +140,27 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        
+
         // Validasyon
         const errors = validateLogin(email, password);
         if (errors.length > 0) {
             return res.status(400).json({ error: errors[0], errors });
         }
-        
-        const users = readUsers();
-        const user = users.find(u => u.email.toLowerCase() === email.toLowerCase().trim());
-        
-        if (!user) {
+
+        const row = await usersService.findByEmail(email);
+        if (!row) {
             return res.status(401).json({ error: 'E-posta veya şifre hatalı' });
         }
-        
-        const isMatch = await bcrypt.compare(password, user.password);
+
+        const isMatch = await bcrypt.compare(password, row.password);
         if (!isMatch) {
             return res.status(401).json({ error: 'E-posta veya şifre hatalı' });
         }
-        
-        const token = generateToken(user);
-        
-        res.json({
-            message: 'Giriş başarılı',
-            token,
-            user: {
-                id: user.id,
-                name: user.name,
-                email: user.email,
-                avatar: user.avatar,
-                allergies: user.allergies || [],
-                favorites: user.favorites || []
-            }
-        });
+
+        const user = usersService.publicUser(row);
+        const token = signToken(user);
+
+        res.json({ message: 'Giriş başarılı', token, user });
     } catch (err) {
         console.error('Login error:', err);
         res.status(500).json({ error: 'Sunucu hatası' });
@@ -226,103 +168,124 @@ app.post('/api/login', async (req, res) => {
 });
 
 // BEN KİMİM
-app.get('/api/me', authMiddleware, (req, res) => {
-    const users = readUsers();
-    const user = users.find(u => u.id === req.user.id);
-    if (!user) {
-        return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
-    }
-    res.json({
-        user: {
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            avatar: user.avatar,
-            allergies: user.allergies || [],
-            favorites: user.favorites || []
+app.get('/api/me', authMiddleware, async (req, res) => {
+    try {
+        const row = await usersService.findById(req.user.id);
+        if (!row) {
+            return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
         }
-    });
+        res.json({ user: usersService.publicUser(row) });
+    } catch (err) {
+        console.error('Me error:', err);
+        res.status(500).json({ error: 'Sunucu hatası' });
+    }
 });
 
 // PROFİL GÜNCELLE
-app.put('/api/profile', authMiddleware, (req, res) => {
-    const { name, avatar, allergies } = req.body;
-    const users = readUsers();
-    const idx = users.findIndex(u => u.id === req.user.id);
-    if (idx === -1) {
-        return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
-    }
-    
-    if (name !== undefined) {
-        if (name.trim().length < 2) {
+app.put('/api/profile', authMiddleware, async (req, res) => {
+    try {
+        const { name, avatar, allergies } = req.body;
+        if (name !== undefined && name.trim().length < 2) {
             return res.status(400).json({ error: 'İsim en az 2 karakter olmalıdır' });
         }
-        users[idx].name = name.trim();
-    }
-    if (avatar !== undefined) users[idx].avatar = avatar;
-    if (allergies !== undefined) users[idx].allergies = allergies;
-    
-    writeUsers(users);
-    
-    res.json({
-        message: 'Profil güncellendi',
-        user: {
-            id: users[idx].id,
-            name: users[idx].name,
-            email: users[idx].email,
-            avatar: users[idx].avatar,
-            allergies: users[idx].allergies,
-            favorites: users[idx].favorites || []
+        const updated = await usersService.updateProfile(req.user.id, { name, avatar, allergies });
+        if (!updated) {
+            return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
         }
-    });
+        res.json({ message: 'Profil güncellendi', user: usersService.publicUser(updated) });
+    } catch (err) {
+        console.error('Profile error:', err);
+        res.status(500).json({ error: 'Sunucu hatası' });
+    }
 });
 
 // FAVORİLER GÜNCELLE
-app.put('/api/favorites', authMiddleware, (req, res) => {
-    const { favorites } = req.body;
-    const users = readUsers();
-    const idx = users.findIndex(u => u.id === req.user.id);
-    if (idx === -1) {
-        return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+app.put('/api/favorites', authMiddleware, async (req, res) => {
+    try {
+        const updated = await usersService.updateFavorites(req.user.id, req.body.favorites);
+        if (!updated) {
+            return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+        }
+        res.json({
+            message: 'Favoriler güncellendi',
+            favorites: usersService.publicUser(updated).favorites,
+        });
+    } catch (err) {
+        console.error('Favorites error:', err);
+        res.status(500).json({ error: 'Sunucu hatası' });
     }
-    
-    users[idx].favorites = favorites || [];
-    writeUsers(users);
-    
-    res.json({
-        message: 'Favoriler güncellendi',
-        favorites: users[idx].favorites
-    });
 });
 
 // HESAP SİL
 app.delete('/api/account', authMiddleware, async (req, res) => {
     try {
         const { password } = req.body;
-        const users = readUsers();
-        const user = users.find(u => u.id === req.user.id);
-        
-        if (!user) {
+        const row = await usersService.findById(req.user.id);
+        if (!row) {
             return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
         }
-        
-        // Şifre doğrulama
+        // Şifre doğrulama (gönderildiyse)
         if (password) {
-            const isMatch = await bcrypt.compare(password, user.password);
+            const isMatch = await bcrypt.compare(password, row.password);
             if (!isMatch) {
                 return res.status(401).json({ error: 'Şifre hatalı' });
             }
         }
-        
-        const filtered = users.filter(u => u.id !== req.user.id);
-        writeUsers(filtered);
-        
+        await usersService.deleteUser(req.user.id);
         res.json({ message: 'Hesap başarıyla silindi' });
     } catch (err) {
         console.error('Delete account error:', err);
         res.status(500).json({ error: 'Sunucu hatası' });
     }
 });
+
+// ==========================================
+// KULLANIM / KOTA DURUMU
+// optionalAuth: üye ise plan+kotası, değilse misafir (IP) kotası döner.
+// ==========================================
+app.get('/api/usage', optionalAuth, async (req, res) => {
+    try {
+        let subject = null;
+        let planKey = 'anon';
+        let planExpiresAt = null;
+
+        if (req.user && req.user.id) {
+            const u = await usersService.findById(req.user.id);
+            if (u) {
+                const norm = usersService.normalizePlan(u);
+                subject = `user:${u.id}`;
+                planKey = norm.plan;
+                planExpiresAt = norm.plan_expires_at || null;
+            }
+        }
+        if (!subject) subject = `ip:${getClientIp(req)}`;
+
+        const plan = getPlan(planKey);
+        const counts = await usageService.getCounts(subject);
+        const fmt = (resource, used) => {
+            const limit = plan.limits[resource];
+            return { used, limit, remaining: limit === null ? null : Math.max(0, limit - used) };
+        };
+
+        res.json({
+            plan: planKey,
+            planExpiresAt,
+            resetsAt: usageService.nextResetISO(),
+            usage: {
+                pollen: fmt('pollen', counts.pollen_count),
+                chat: fmt('chat', counts.chat_count),
+            },
+        });
+    } catch (err) {
+        console.error('Usage endpoint error:', err.message);
+        res.status(500).json({ error: 'Kullanım bilgisi alınamadı' });
+    }
+});
+
+// ==========================================
+// ÜYELİK / ÖDEME  →  /api/membership/*
+// ==========================================
+app.use('/api/membership', membershipRouter);
 
 // ==========================================
 // POLLEN API DURUM (anahtarların durumu — debug/monitoring)
@@ -335,13 +298,13 @@ app.get('/api/pollen/status', authMiddleware, (req, res) => {
 
 // ==========================================
 // POLLEN API PROXY
-// PUBLIC — auth GEREKMEZ:
-//   • Polen verisi hassas değil (Google/Open-Meteo zaten halka açık)
-//   • API anahtarları sunucu tarafında kalıyor
-//   • Login olmamış kullanıcı da haritayı görebilsin
-//   • Kotaya karşı zaten çoklu key + Open-Meteo fallback var
+// optionalAuth + enforceQuota('pollen'):
+//   • Misafir (girişsiz) günde sınırlı sorgu yapabilir (IP bazlı).
+//   • Ücretsiz üye günlük limitli, premium üye sınırsız.
+//   • Limit dolunca 429 + { code:'QUOTA_EXCEEDED', action } döner.
+//   • API anahtarları yine sunucu tarafında kalır.
 // ==========================================
-app.get('/api/pollen', async (req, res) => {
+app.get('/api/pollen', optionalAuth, enforceQuota('pollen'), async (req, res) => {
     try {
         const { lat, lng, days = 5 } = req.query;
 
@@ -392,7 +355,7 @@ async function tryGroqChat(apiKey, model, systemPrompt, messages) {
     return completion.choices[0]?.message?.content || '';
 }
 
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', optionalAuth, enforceQuota('chat'), async (req, res) => {
     try {
         const { message, locationName, lat, lng, userAllergens, history } = req.body;
 
@@ -535,6 +498,11 @@ Cevabın TAMAMEN TÜRKÇE olmalı. İngilizce yazmak yasak.`;
 // ==========================================
 app.listen(PORT, () => {
     console.log(`🌿 Alerji Takip Backend çalışıyor: http://localhost:${PORT}`);
+
+    // PostgreSQL bağlantısı (üyelik & kota için zorunlu)
+    db.ping()
+        .then(() => console.log('   PostgreSQL:     ✅ Bağlantı başarılı'))
+        .catch((e) => console.log(`   PostgreSQL:     ❌ Bağlanılamadı (${e.message}). 'npm run migrate' çalıştırıp DATABASE_URL'i kontrol edin.`));
 
     // Pollen sağlayıcı durumu
     const { getKeyManagerStatus } = require('./tools/pollenProviders/google');

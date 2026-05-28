@@ -1,8 +1,14 @@
 import { usePollen } from '../../context/PollenContext';
+import { useAuth } from '../../context/AuthContext';
 
 export default function ProfileButton() {
   const { userAllergens, setCurrentView, userAvatar } = usePollen();
+  const { user } = useAuth();
   const totalSelected = userAllergens.length;
+
+  // Giriş yapılmışsa tek bölümde kullanıcı adını göster; değilse "profil".
+  const label = user?.name || 'profil';
+  const avatar = user?.avatar || userAvatar || '👤';
 
   return (
     <button
@@ -13,14 +19,14 @@ export default function ProfileButton() {
       aria-label="Profil"
     >
       <div className="clean-profile-avatar">
-        {userAvatar || '👤'}
+        {avatar}
         {totalSelected > 0 && (
           <span className="clean-profile-badge" aria-label={`${totalSelected} alerjen seçili`}>
             {totalSelected}
           </span>
         )}
       </div>
-      <span className="clean-profile-label">profil</span>
+      <span className="clean-profile-label">{label}</span>
     </button>
   );
 }

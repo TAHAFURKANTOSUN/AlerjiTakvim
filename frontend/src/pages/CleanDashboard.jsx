@@ -11,9 +11,9 @@ import { usePollen } from '../context/PollenContext';
 import { POLLEN_TYPES, RISK_LEVELS } from '../data/mockData';
 import Chatbot from '../components/dashboard/Chatbot';
 import MapSelector from '../components/dashboard/MapSelector';
-import ProfileButton from '../components/dashboard/ProfileButton';
 import DashboardProfilePage from '../components/dashboard/DashboardProfilePage';
 import ThemeToggle from '../components/dashboard/ThemeToggle';
+import AccountMenu from '../components/membership/AccountMenu';
 
 // ─── HELPER: µg/m³ → yoğunluk etiketi ──────────────────────────────
 function getIntensityLevel(value) {
@@ -255,7 +255,7 @@ export default function CleanDashboard() {
             />
             <span className="clean-header-date">{dateStr}</span>
             <ThemeToggle />
-            <ProfileButton />
+            <AccountMenu />
           </div>
         </div>
       </header>
