@@ -1,20 +1,19 @@
 // ============================================================
 // Kimlik doğrulama middleware'leri + token üretimi
+// JWT sırrı artık config/env üzerinden gelir (prod'da zorunlu;
+// eski 'fallback-secret-key' güvenlik açığı kaldırıldı).
 // ============================================================
 
 const jwt = require('jsonwebtoken');
-
-function getSecret() {
-    return process.env.JWT_SECRET || 'fallback-secret-key';
-}
+const config = require('../config/env');
 
 // 7 günlük JWT üretir. plan token'a bilgi amaçlı gömülür;
 // kota kontrolünde her zaman DB'deki güncel plan esas alınır.
 function signToken(user) {
     return jwt.sign(
         { id: user.id, email: user.email, name: user.name, plan: user.plan || 'free' },
-        getSecret(),
-        { expiresIn: '7d' }
+        config.jwtSecret,
+        { expiresIn: config.jwtExpiresIn }
     );
 }
 
@@ -25,7 +24,7 @@ function authMiddleware(req, res, next) {
         return res.status(401).json({ error: 'Yetkilendirme gerekli' });
     }
     try {
-        req.user = jwt.verify(h.split(' ')[1], getSecret());
+        req.user = jwt.verify(h.split(' ')[1], config.jwtSecret);
         next();
     } catch {
         return res.status(401).json({ error: 'Geçersiz veya süresi dolmuş token' });
@@ -37,9 +36,10 @@ function authMiddleware(req, res, next) {
 function optionalAuth(req, _res, next) {
     const h = req.headers.authorization;
     if (h && h.startsWith('Bearer ')) {
-        try { req.user = jwt.verify(h.split(' ')[1], getSecret()); } catch { /* misafir devam */ }
+        try { req.user = jwt.verify(h.split(' ')[1], config.jwtSecret); } catch { /* misafir devam */ }
     }
     next();
 }
 
-module.exports = { authMiddleware, optionalAuth, signToken, getSecret };
+// getSecret geriye dönük uyumluluk için korunur (artık config'ten gelir).
+module.exports = { authMiddleware, optionalAuth, signToken, getSecret: () => config.jwtSecret };

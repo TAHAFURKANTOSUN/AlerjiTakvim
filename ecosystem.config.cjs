@@ -20,7 +20,7 @@ module.exports = {
     {
       name: 'alerji-takvim-backend',
       cwd: './backend',
-      script: 'app.js',
+      script: 'server.js',
 
       // Tek instance — singleton in-memory state (groqKeyManager,
       // googleKeyManager) cluster'da tutarsız olur. Yatay ölçek

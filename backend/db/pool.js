@@ -47,4 +47,12 @@ async function ping() {
     return true;
 }
 
-module.exports = { getPool, query, ping, setPoolForTesting };
+// Havuzu düzgünce kapatır (graceful shutdown — SIGTERM/SIGINT).
+async function end() {
+    if (_pool) {
+        await _pool.end();
+        _pool = null;
+    }
+}
+
+module.exports = { getPool, query, ping, end, setPoolForTesting };
