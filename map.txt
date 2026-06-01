@@ -1,0 +1,349 @@
+================================================================
+ALERJİ TAKİM — PROJE HARİTASI (map.txt)
+Güncelleme: 2026-05-29
+================================================================
+Proje: Türkiye'ye özel Polen Takip + Alerji Asistanı uygulaması.
+Stack: React (Vite) frontend · Node.js/Express backend · PostgreSQL
+       · Groq AI (RAG + LLM chatbot) · Google Pollen API / Open-Meteo fallback
+
+================================================================
+BACKEND
+================================================================
+
+── GİRİŞ NOKTALARI ──────────────────────────────────────────────
+
+backend/server.js
+  • (başlangıç) → app.listen(), graceful shutdown
+  • shutdown(signal)               SIGTERM/SIGINT ile düzgün kapatma
+
+backend/app.js
+  • (fabrika) → Express app oluşturur, route'ları monte eder
+  • GET /                           health hint
+  • GET /api/health                 DB ping yanıtı (200 / 503)
+
+── KONFİGÜRASYON ────────────────────────────────────────────────
+
+backend/config/env.js              Tüm .env değişkenleri (tek kaynak)
+backend/config/plans.js            PLANS, PREMIUM fiyat/limit tanımları
+  • getPlan(key)                   'anon'|'free'|'premium' → plan nesnesi
+
+── VERİTABANI ───────────────────────────────────────────────────
+
+backend/db/pool.js                 pg Pool singleton
+  • query(sql, params)             Genel sorgu wrapper'ı
+  • ping()                         Bağlantı sağlık kontrolü
+  • end()                          Havuzu kapat (shutdown'da kullanılır)
+
+backend/db/schema.sql              Tablo tanımları
+  Tablolar: users, usage_daily, payments
+
+backend/db/migrate.js              Şema migrasyon scripti (npm run migrate)
+
+── ROUTE'LAR ────────────────────────────────────────────────────
+
+backend/routes/auth.js             → /api/*
+  POST /register                   Yeni kullanıcı kaydı
+  POST /login                      Giriş + JWT üretimi
+  GET  /me                         Oturum sahibini getir
+  PUT  /profile                    Profil güncelle (name, avatar, allergies)
+  PUT  /favorites                  Favori şehirler güncelle
+  DELETE /account                  Hesap sil
+
+backend/routes/membership.js       → /api/membership/*
+  GET  /plans                      Plan + fiyat bilgisi
+  POST /checkout                   Ödeme başlat (iyzico / simülasyon)
+  POST /confirm                    Ödemeyi onayla → premium aktifeştir
+  POST /cancel                     Premium iptal → free'ye dön
+
+backend/routes/pollen.js           → /api/pollen
+  GET  /?lat=&lng=&days=           Polen verisi (kotalı, optionalAuth)
+
+backend/routes/chat.js             → /api/chat
+  POST /                           Chatbot yanıtı (kotalı, optionalAuth)
+
+backend/routes/usage.js            → /api/usage
+  GET  /                           Günlük kota kullanımı
+
+── SERVİSLER ────────────────────────────────────────────────────
+
+backend/services/users.js          Kullanıcı CRUD (PostgreSQL)
+  genId()                          ID üretici (timestamp36 + hex)
+  normalizePlan(row)               Süresi geçmiş premium → free lazy downgrade
+  publicUser(row)                  Şifresiz kullanıcı nesnesi (API'ye döner)
+  findByEmail(email)               E-postayla kullanıcı bul
+  findById(id)                     ID ile kullanıcı bul
+  createUser({name,email,password}) Yeni kullanıcı oluştur (bcrypt hash)
+  updateProfile(id, {name,avatar,allergies})
+  updateFavorites(id, favorites)
+  deleteUser(id)
+  setPremium(id, {days})           Premium aktifleştir / uzat
+  setFree(id)                      Premium iptal
+
+backend/services/chat.js           Chatbot orkestratörü (Groq + RAG + Polen)
+  tryGroqChat(apiKey, model, systemPrompt, messages)
+                                   Tek Groq isteği gönder
+  gatherContext({message,lat,lng,locationName})
+                                   RAG + canlı pollen PARALEL topla
+  generateChatReply({message,...}) Ana chatbot fonksiyonu (fallback döngüsü)
+
+backend/services/usage.js          Günlük kota sayaçları (usage_daily tablosu)
+  nextResetISO()                   Ertesi günün başlangıcı (reset zamanı)
+  getCounts(subject)               Bugünkü pollen/chat sayaçlarını oku
+  consume(subject, resource, limit) Atomik kota tüket (izin ver / reddet)
+
+── MIDDLEWARE ────────────────────────────────────────────────────
+
+backend/middleware/auth.js
+  signToken(user)                  7 günlük JWT üret
+  authMiddleware(req,res,next)     Zorunlu JWT doğrulama (401 yoksa)
+  optionalAuth(req,res,next)       İsteğe bağlı auth (misafir izni)
+
+backend/middleware/quota.js
+  enforceQuota(resource)           Kota middleware fabrikası ('pollen'|'chat')
+
+backend/middleware/security.js
+  securityHeaders()                Helmet ayarları
+  corsMiddleware()                 CORS yapılandırması
+  generalLimiter                   Genel rate-limiter
+  authLimiter                      Login/register rate-limiter
+
+backend/middleware/errorHandler.js
+  notFoundHandler                  404 yakalayıcı
+  errorHandler                     Merkezi hata işleyici (ApiError farkındalığı)
+
+── ARAÇLAR ──────────────────────────────────────────────────────
+
+backend/tools/pollen.js            Polen orkestratörü (Google → Open-Meteo fallback)
+  isGoogleBoycotted()              Google boykot kontrolü
+  boycottGoogle(reason)            5 dk Google'ı devre dışı bırak
+  getPollenData({lat,lng,days})    Sağlayıcı zinciriyle ham veri al
+  fetchPollenSummary({lat,lng,...}) Chatbot için Türkçe özet metin üret
+
+backend/tools/pollenProviders/google.js
+  fetchGooglePollen({lat,lng,days}) Google Pollen API isteği
+  getKeyManagerStatus()            Key manager durum özeti
+
+backend/tools/pollenProviders/googleKeyManager.js  (GoogleKeyManager sınıfı)
+  getActiveKey()                   Aktif (bloklanmamış) API anahtarını döndür
+  markBlocked(apiKey, statusCode)  Anahtarı geçici blokla (429→1h, 403→24h, 401→10m)
+  allBlocked()                     Tüm anahtarlar bloklu mu?
+  getStatus()                      Debug/monitoring özeti
+
+backend/tools/pollenProviders/openMeteo.js
+  fetchOpenMeteoPollen({lat,lng,days})
+                                   Open-Meteo CAMS Europe API (fallback, anahtarsız)
+
+── AI / PROMPT ──────────────────────────────────────────────────
+
+backend/groqKeyManager.js          (GroqKeyManager sınıfı — singleton)
+  getActiveConfig()                Aktif {apiKey, model} çifti döndür
+  markBlocked(apiKey, model, statusCode)  Kombinasyonu blokla
+  getStatus()                      Durum özeti (blockedCount vb.)
+  hasAvailableKeys()               Kullanılabilir key var mı?
+
+backend/prompts/chatPrompt.js      Sistem prompt kurucusu
+  buildContextBlock(chunks)        RAG kaynaklarını prompt bloğuna çevir
+  buildPollenBlock(livePollen)     Canlı pollen verisini prompt bloğuna çevir
+  buildSystemPrompt({locationName,userAllergens,chunks,livePollen})
+                                   Tam sistem promptu oluştur
+  withLanguageLock(message)        Kullanıcı mesajına Türkçe dil kilidi ekle
+  toGroqHistory(history)           Frontend geçmişini Groq formatına çevir
+
+── ÖDEME ────────────────────────────────────────────────────────
+
+backend/payments/iyzico.js         Ödeme sağlayıcı soyutlaması
+  getIyzipayClient()               iyzico SDK client (TODO: gerçek entegrasyon)
+  createCheckout({user,amount,currency})
+                                   Ödeme başlat (simülasyon / iyzico)
+  verifyPayment({token})           Ödemeyi doğrula
+
+── YARDIMCILAR ──────────────────────────────────────────────────
+
+backend/utils/ApiError.js
+  ApiError sınıfı                  HTTP hata nesnesi
+  ApiError.badRequest(msg)         400
+  ApiError.unauthorized(msg)       401
+  ApiError.notFound(msg)           404
+
+backend/utils/asyncHandler.js
+  asyncHandler(fn)                 Async route handler → Promise hatalarını yakala
+
+backend/utils/billing.js
+  getClientIp(req)                 İstemci IP'si (proxy-aware)
+  resolveSubjectAndPlan(req)       Kota için subject (user_id / IP) ve plan belirle
+
+backend/utils/validation.js
+  validateRegister({name,email,password,passwordConfirm})
+  validateLogin({email,password})
+
+================================================================
+FRONTEND
+================================================================
+
+── GİRİŞ ────────────────────────────────────────────────────────
+
+frontend/src/main.jsx              React kök, Provider sarmalama
+frontend/src/App.jsx               Router + route tanımları
+
+── API KATMANI ──────────────────────────────────────────────────
+
+frontend/src/api/client.js         Backend HTTP sarmalayıcısı
+  apiRequest(endpoint, options)    Temel istek (token ekleme, 401/429 event)
+  login(email, password)           Giriş + token kaydet
+  register(name, email, password, passwordConfirm)
+  getMe()                          Mevcut oturum kullanıcısı
+  updateProfile(profileData)       Profil güncelle
+  updateFavorites(favorites)       Favoriler güncelle
+  deleteAccount(password)          Hesap sil
+  fetchPollen(lat, lng, days)      Polen verisi al
+  sendChatMessage(message, ...)    Chatbot mesajı gönder
+  getUsage()                       Kota kullanımını sorgula
+  getPlans()                       Plan bilgisi
+  startCheckout()                  Ödeme başlat
+  confirmMembership(paymentId, token)
+  cancelMembership()
+  logout()                         Token temizle
+
+── CONTEXT / STATE ──────────────────────────────────────────────
+
+frontend/src/context/AuthContext.jsx
+  AuthProvider                     JWT oturum yönetimi
+  checkAuth()                      Uygulama başlangıcında token doğrula
+  loginUser(userData)              Kullanıcı state'ini set et
+  logoutUser()                     Çıkış yap
+  updateUserProfile(profileData)   Profil güncelle + state yenile
+  updateUserFavorites(favorites)   Favoriler güncelle + state yenile
+  clearUser()                      State + token temizle
+  useAuth()                        Hook
+
+frontend/src/context/PollenContext.jsx
+  PollenProvider                   Polen veri yönetimi
+  initialLocation()                Kayıtlı / varsayılan konum yükle
+  fetchLivePollenFor(lat, lng)     Canlı pollen API çağrısı (yarış korumalı)
+  updateLocation(location)         Konum güncelle + kalıcı kaydet
+  updateLocationFromCoords(lat,lng) Harita tıklamasından konum güncelle
+  goHome()                         Dashboard görünümüne dön
+  toggleAllergen(allergenKey)      Allerjen seç/kaldır
+  setAllergens(allergens)          Tüm alerjenleri set et
+  usePollen()                      Hook
+
+frontend/src/context/UsageContext.jsx
+  UsageProvider                    Kota sayaç yönetimi
+  useUsage()                       Hook
+
+frontend/src/context/ThemeContext.jsx
+  ThemeProvider                    Koyu/açık tema
+  useTheme()                       Hook
+
+── VERİ ADAPTÖRÜ ────────────────────────────────────────────────
+
+frontend/src/data/livePollenAdapter.js  Google/Open-Meteo → widget şekli
+  adaptDailySummary(livePollen)    Bugünkü genel risk özeti
+  adaptForecast(livePollen)        5 günlük tahmin listesi
+  adaptCategoryDistribution(livePollen)
+                                   Ağaç/Çimen/Yabani ot yüzde dağılımı (donut chart)
+  adaptHourly(livePollen)          24 saatlik sentetik dağılım (diurnal eğri)
+  adaptPersonalizedAlerts(livePollen, userAllergens)
+                                   Kullanıcı alerjilerine göre kişisel uyarılar
+  adaptLivePollen(livePollen, userAllergens)
+                                   Tümünü birden üretir (ana giriş noktası)
+
+frontend/src/data/staticReference.js
+  POLLEN_TYPES                     Polen tipi metadata listesi
+  RISK_LEVELS                      Risk seviyesi nesneleri (low/medium/high)
+  ALLERGEN_OPTIONS                 Kullanıcı allerjen seçenekleri
+
+frontend/src/data/turkishProvinces.js
+  TURKISH_PROVINCES_SORTED         81 il koordinat listesi (alfabetik)
+
+frontend/src/utils/constants.js    API_BASE ve UI sabit değerleri
+frontend/src/utils/locationStorage.js
+  loadLocation()                   localStorage'dan konum oku
+  saveLocation(loc)                localStorage'a konum kaydet
+
+frontend/src/utils/validators.js   Form doğrulama yardımcıları
+
+── SAYFALAR ─────────────────────────────────────────────────────
+
+frontend/src/pages/CleanDashboard.jsx    Ana dashboard (büyük — 22 KB)
+frontend/src/pages/DashboardPage.jsx     Eski dashboard wrapper
+frontend/src/pages/PollenPage.jsx        Polen detay sayfası
+frontend/src/pages/PollenDashboard.jsx   Polen özet dashboard
+frontend/src/pages/ProfilePage.jsx       Profil sayfası
+frontend/src/pages/FavoritesPage.jsx     Favori şehirler
+frontend/src/pages/LoginPage.jsx         Giriş formu
+frontend/src/pages/RegisterPage.jsx      Kayıt formu
+
+── BİLEŞENLER ───────────────────────────────────────────────────
+
+frontend/src/components/dashboard/Chatbot.jsx        AI sohbet bileşeni
+frontend/src/components/dashboard/MapSelector.jsx    Harita + şehir seçici (11 KB)
+frontend/src/components/dashboard/HourlyChart.jsx    Saatlik grafik
+frontend/src/components/dashboard/DensityChart.jsx   Yoğunluk grafiği (donut)
+frontend/src/components/dashboard/ForecastPanel.jsx  5 günlük tahmin
+frontend/src/components/dashboard/DailySummary.jsx   Günlük özet kartı
+frontend/src/components/dashboard/CitySelector.jsx   Şehir seçici dropdown
+frontend/src/components/dashboard/DashboardProfilePage.jsx  Profil paneli
+frontend/src/components/membership/UpgradeModal.jsx  Premium yükseltme modal
+frontend/src/components/membership/AuthModal.jsx     Giriş/kayıt modal
+frontend/src/components/membership/AccountMenu.jsx   Hesap menüsü
+frontend/src/components/membership/MembershipBar.jsx Kota/plan bilgi barı
+frontend/src/components/PollenResults.jsx            Polen sonuçları listesi
+frontend/src/components/MapModal.jsx                 Harita modal
+frontend/src/components/Navbar.jsx                   Üst navigasyon
+frontend/src/components/BottomTabBar.jsx             Alt tab bar (mobil)
+frontend/src/components/ProtectedRoute.jsx           Auth koruyucu route
+
+================================================================
+VERİTABANI ŞEMASI (backend/db/schema.sql)
+================================================================
+
+users              id, name, email, password, avatar, allergies(json),
+                   favorites(json), plan('free'|'premium'),
+                   premium_since, plan_expires_at
+
+usage_daily        subject(user_id veya IP), usage_date, pollen_count, chat_count
+                   PK: (subject, usage_date)
+
+payments           id, user_id, amount, currency, status, provider, provider_ref
+
+================================================================
+ÖNEMLİ AKIŞLAR
+================================================================
+
+[POLLEN DATA AKIŞI]
+  frontend fetchPollen() → GET /api/pollen
+  → optionalAuth → enforceQuota('pollen') → pollen route handler
+  → getPollenData() [tools/pollen.js]
+    → fetchGooglePollen() [google.js] VEYA fetchOpenMeteoPollen() [openMeteo.js]
+  → frontend: adaptLivePollen() → dashboard widget'ları
+
+[CHATBOT AKIŞI]
+  frontend sendChatMessage() → POST /api/chat
+  → optionalAuth → enforceQuota('chat') → chat route handler
+  → generateChatReply() [services/chat.js]
+    → gatherContext() [RAG retriever + fetchPollenSummary PARALEL]
+    → buildSystemPrompt() [prompts/chatPrompt.js]
+    → Groq fallback döngüsü (GroqKeyManager)
+
+[AUTH AKIŞI]
+  register/login → JWT üret → localStorage.token
+  Her istek → apiRequest() Bearer header ekle
+  401 → auth:unauthorized event → AuthContext clearUser()
+
+[KOTA AKIŞI]
+  enforceQuota(resource) → resolveSubjectAndPlan()
+    (giriş yapmış: user_id / misafir: IP adresi)
+  → consume() [services/usage.js] atomik UPDATE
+  → 429 QUOTA_EXCEEDED → quota:exceeded event → UsageContext → modal
+
+================================================================
+NOTLAR
+================================================================
+• PAYMENT_MODE=simulate (varsayılan): Gerçek para hareketi YOK.
+  Gerçek iyzico için: npm i iyzipay + .env PAYMENT_MODE=iyzico
+• data/vector-store.json: RAG için gerekli (~2.5 MB vektör indeksi)
+  Yoksa: node rag/build-index.js ile oluştur
+• Groq modelleri: llama-3.3-70b-versatile (öncelik) → llama-4-scout → gpt-oss-120b → gpt-oss-20b
+• Google Pollen API boykot süresi: 5 dk (auth/kota hatasında)
+• Kota: anon=3/gün, free=10/gün, premium=sınırsız (pollen ve chat için)

@@ -1,40 +1,18 @@
 // ============================================================
 // Kota middleware'i — /api/pollen ve /api/chat için günlük limit.
 // optionalAuth'tan SONRA kullanılır:
-//   app.get('/api/pollen', optionalAuth, enforceQuota('pollen'), handler)
+//   router.get('/', optionalAuth, enforceQuota('pollen'), handler)
 // ============================================================
 
 const usageService = require('../services/usage');
-const users = require('../services/users');
 const { getPlan } = require('../config/plans');
-
-function getClientIp(req) {
-    const xff = req.headers['x-forwarded-for'];
-    if (xff) return String(xff).split(',')[0].trim();
-    return req.ip || req.socket?.remoteAddress || 'unknown';
-}
+const { getClientIp, resolveSubjectAndPlan } = require('../utils/billing');
 
 // resource: 'pollen' | 'chat'
 function enforceQuota(resource) {
     return async function quotaMiddleware(req, res, next) {
         try {
-            let subject;
-            let planKey;
-
-            if (req.user && req.user.id) {
-                const u = await users.findById(req.user.id);
-                if (u) {
-                    subject = `user:${u.id}`;
-                    planKey = users.normalizePlan(u).plan; // 'free' | 'premium' (süre dolduysa free)
-                } else {
-                    // Token geçerli ama kullanıcı silinmiş → misafir gibi davran.
-                    subject = `ip:${getClientIp(req)}`;
-                    planKey = 'anon';
-                }
-            } else {
-                subject = `ip:${getClientIp(req)}`;
-                planKey = 'anon';
-            }
+            const { subject, planKey } = await resolveSubjectAndPlan(req);
 
             const plan = getPlan(planKey);
             const limit = plan.limits[resource]; // null = sınırsız
@@ -72,4 +50,6 @@ function enforceQuota(resource) {
     };
 }
 
+// getClientIp geriye dönük uyumluluk için yeniden dışa aktarılır
+// (artık asıl tanım utils/billing.js içinde).
 module.exports = { enforceQuota, getClientIp };
