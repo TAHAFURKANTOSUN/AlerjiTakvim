@@ -43,7 +43,7 @@ app.get('/', (_req, res) => {
     res.json({
         status: 'ok',
         service: 'Alerji Takip API',
-        hint: 'Bu bir API sunucusudur. Web arayüzü için frontend klasöründe `npm run dev` çalıştırın.',
+        hint: '(:Bu bir API sunucusudur:) ',
     });
 });
 

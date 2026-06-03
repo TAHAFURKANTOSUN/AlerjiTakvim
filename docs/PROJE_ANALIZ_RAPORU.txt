@@ -1,0 +1,481 @@
+================================================================================
+                  ALERJİ TAKİP — DETAYLI PROJE ANALİZ RAPORU
+================================================================================
+
+Proje adı     : Alerji Takip (Polen Takip Paneli)
+Tür           : Tam-yığın web uygulaması (React + Express + PostgreSQL + AI/RAG)
+Hedef         : Türkiye'de polen alerjisi olan kullanıcılar
+Yaşam döngüsü : Geliştirme tamamlandı · Otomatik test geçti · Üretime hazır
+Belge sürümü  : 1.0
+
+
+================================================================================
+1) PROJE ÖZETİ
+================================================================================
+
+Alerji Takip; Türkiye'nin tüm illerini kapsayan, kullanıcının seçtiği konuma özel
+anlık ve tahmini polen yoğunluğu verisini sunan, polen ve alerji konularında
+yapay zekâ destekli bir asistana sahip bir web uygulamasıdır. Üç katmanlı bir
+üyelik modeli (Misafir, Ücretsiz, Premium) ve günlük kota mekanizmasıyla, hem
+kayıtsız ziyaretçi denemesine hem de premium gelir akışına izin verir.
+
+Çekirdek değer önerisi:
+  • Konum-spesifik, çoklu sağlayıcı destekli polen verisi
+  • Bilimsel kaynaklara dayalı, halüsinasyon karşıtı asistan
+  • Adil günlük kullanım modeli (paywall yerine kademeli)
+
+
+================================================================================
+2) ÖZELLİK LİSTESİ — DETAYLI
+================================================================================
+
+2.1 KULLANICI YÖNETİMİ
+----------------------
+  • Kayıt (register)
+      - Endpoint: POST /api/register
+      - Doğrulama: isim ≥ 2, e-posta regex, şifre ≥ 6 (harf+rakam zorunlu),
+        şifre tekrar eşleşmesi
+      - Şifre saklama: bcrypt (salt rounds = 10)
+      - Aynı kurallar hem frontend (AuthModal) hem backend (utils/validation.js)
+        tarafında — istemci atlanırsa sunucu yine reddeder
+  • Giriş (login)
+      - bcrypt.compare ile doğrulama
+      - 7 günlük JWT (sır: config/env.js, prod'da zorunlu)
+  • Çıkış (logout)
+      - İstemcide token silinir; AuthContext oturumu sıfırlar
+  • Profil
+      - GET /api/me (zorunlu auth)
+      - PUT /api/profile — avatar/alerjenler güncellenir
+        (isim hesap kimliği olduğu için profil sayfasında salt-okunur)
+  • Hesap silme
+      - DELETE /api/account — şifre doğrulamalı
+  • Favoriler
+      - PUT /api/favorites (jsonb sütun)
+
+2.2 ÜYELİK & GÜNLÜK KOTA
+------------------------
+  • Üç plan, .env üzerinden ayarlanabilir
+      Plan          Polen/gün   Sohbet/gün   Erişim modeli
+      ----------    ---------   ----------   --------------------------------
+      Misafir       3           3            IP bazlı (X-Forwarded-For), kayıt yok
+      Ücretsiz      10          5            JWT (7 gün); kayıt + giriş
+      Premium       sınırsız    sınırsız     iyzico ile 30 gün; uzatılabilir
+  • Atomik kota tüketimi (yarış koşulsuz, FOR UPDATE'siz):
+      1) INSERT INTO usage_daily (subject, usage_date) VALUES ($1, CURRENT_DATE)
+         ON CONFLICT (subject, usage_date) DO NOTHING;
+      2) UPDATE usage_daily
+            SET <col> = <col> + 1
+          WHERE subject = $1
+            AND usage_date = CURRENT_DATE
+            AND <col> < $2
+         RETURNING <col> AS used;
+      → RETURNING boş ise kota dolu (HTTP 429 + code:'QUOTA_EXCEEDED').
+  • Kota dolunca standart yanıt:
+      HTTP 429 {
+        error, code: 'QUOTA_EXCEEDED', resource, plan, limit, used,
+        resetsAt, action: 'register' | 'upgrade'
+      }
+  • Yanıt header'ları (UI rozetleri için):
+      X-Quota-Plan · X-Quota-Limit · X-Quota-Used
+
+2.3 POLEN VERİSİ
+----------------
+  • Endpoint: GET /api/pollen?lat&lng&days
+  • Türkiye geneli + harita üzerinden serbest konum (en yakın şehre snap YOK —
+    ham koordinatla API'ye gider)
+  • Çoklu sağlayıcı orchestrator (backend/tools/pollen.js):
+      1) Google Pollen API — çoklu anahtar fallback'i
+           - 429 (rate-limit) → o anahtar 1 saat bloklanır
+           - 403 (kota bitti) → o anahtar 24 saat bloklanır
+           - 401 (auth)      → o anahtar 10 dk bloklanır
+           - Aktif anahtar bellekte tutulur (her istekte sıfırdan denenmez)
+      2) Tüm Google anahtarları tükendi → Open-Meteo CAMS Europe (anahtarsız,
+         son çare fallback)
+  • Hangi sağlayıcının cevapladığı X-Pollen-Source yanıt header'ında raporlanır
+
+2.4 AI POLEN ASİSTANI (sohbet botu) — bkz. §3 (modele akan değerler)
+--------------------------------------------------------------------
+  • Endpoint: POST /api/chat
+  • Sağlayıcı: Groq SDK (Llama 3.3-70B-Versatile, Llama-4-Scout, GPT-OSS 120B,
+    GPT-OSS 20B — bu öncelik sırasında)
+  • Her istek için tüm anahtarlar × tüm modeller matrisinde fallback denenir
+  • Sohbet kullanıcı arayüzü: sağ alt köşede yüzen FAB → açılır panel; öneri
+    butonları; yazma indikatörü; otomatik kaydırma; klavye odak yönetimi
+
+2.5 DİNAMİK DASHBOARD
+---------------------
+  Hardcoded veri yok; tüm değerler API'den canlı çekilir.
+  • Hero risk kartı: Düşük/Orta/Yüksek + alerjen-özelinde aksiyon cümlesi
+  • Polen türü uyarı kartları (en riskli tür otomatik öne çıkar)
+  • 24 saatlik grafik: Recharts AreaChart, gradient dolgulu, tıklanabilir
+    efsane ile tür filtreleme
+  • 5 günlük tahmin şeridi (renk-kodlu noktalar, hover detay)
+  • Mevsimsel ipucu kartı (ay bazlı içerik — Mart-Mayıs ağaç polenleri vb.)
+  • Harita (React-Leaflet): konum seçici + alanlar
+  • Profil paneli: kimlik (Hoş geldiniz, [Ad]), e-posta, plan rozeti,
+    alerjen seçimi, istatistikler
+
+2.6 ÖDEME ENTEGRASYONU (iyzico)
+-------------------------------
+  • PAYMENT_MODE = 'simulate' | 'iyzico' (env)
+  • Simüle modda gerçek para hareketi yok, akış aynı (frontend hiç değişmiyor)
+  • Endpoint'ler:
+      GET  /api/membership/plans     (herkese açık)
+      POST /api/membership/checkout  (üye olmalı) → payment_id + token
+      POST /api/membership/confirm   (üye olmalı) → planı 30 gün premium yapar
+      POST /api/membership/cancel    (üye olmalı) → free'ye düşer
+  • payments tablosunda her işlem kaydedilir (pending → success/failed)
+  • Premium yaşam döngüsü: setPremium() mevcut süre üstüne ekler (uzatma);
+    süre dolan premium normalizePlan() ile "lazy downgrade" ile free olarak
+    raporlanır
+
+2.7 GÜVENLİK KATMANI
+--------------------
+  • bcrypt şifre hash + JWT (7 gün)
+  • config/env.js fail-fast: prod'da JWT_SECRET eksikse sunucu açılışta durur
+  • helmet — güvenlik HTTP header'ları
+  • express-rate-limit — genel /api hız sınırı (kötü niyetli trafik için ek
+    katman; iş kotasından bağımsız)
+  • CORS allowlist (örnek konfig deploy/nginx/ içinde)
+  • app.set('trust proxy', 1) — X-Forwarded-For sahteciliğine karşı sınırlı
+  • Tüm AI ve harici API anahtarları yalnızca sunucuda (.env) — istemciye
+    asla sızmaz; frontend her zaman backend proxy üzerinden gider
+
+2.8 TASARIM SİSTEMİ
+-------------------
+  • Token tabanlı tema (CSS değişkenleri); açık/koyu yapısal olarak eşleşir
+  • Açık tema öne çıkan kararları:
+      - Yüzeyler #FFFDF7 (klinik beyaz #FFFFFF değil — sıcak beyaz)
+      - Birincil sage #5F8A48 (koyu tema #9CC281'in aynı renk ailesi)
+      - Katmanlı (contact + ambient) sıcak-tonlu gölgeler
+      - Yüzey üst-parlaklığı: inset 0 1px 0 rgba(255,255,255,.7) — premium his
+      - Üstten nazik aydınlanma gradyanı + ince film greni dokusu
+  • Hesap menüsü: tek dropdown'da kimlik, kota, premium, ayarlar, çıkış
+    (yinelenen profil bloğunu ortadan kaldırır)
+
+2.9 PROFİL & KİMLİK NETLİĞİ
+---------------------------
+  • Profil sayfası üstünde "Hoş geldiniz, [Ad]" + e-posta + plan rozeti
+  • Kullanıcı adı SALT-OKUNUR (devre dışı input + 🔒 "değiştirilemez" notu)
+    — sosyal mühendislik / kimlik karıştırma riski azaltılır
+  • Avatar düzenlenebilir kişiselleştirme (giriş varsa hesaba kaydedilir)
+  • Misafire profil sayfasında giriş daveti
+
+
+================================================================================
+3) MODELE AKAN DEĞERLER  (AI Sohbet Asistanı — DERİN İNCELEME)
+================================================================================
+
+POST /api/chat handler'ı her istekte sistem promptunu canlı olarak inşa eder.
+Modele giden bağlam altı kaynaktan toplanır:
+
+[1] DİL KİLİDİ
+    Promptun en üstünde:
+        # DİL KURALI (EN ÖNCELİKLİ)
+        SEN SADECE TÜRKÇE YANIT VEREN BİR ASİSTANSIN.
+        Kaynakların veya kullanıcı mesajının dili ne olursa olsun, cevabın
+        HER ZAMAN TÜRKÇE olmalı.
+    Ayrıca son kullanıcı mesajına da bir "dil kilidi" iliştirilir:
+        "<message>\n\n(Lütfen cevabı SADECE TÜRKÇE yaz. Kaynaklar İngilizce
+         olsa bile çevirip kullan.)"
+    Neden iki yerde: LLM'ler promptun sonuna en çok dikkat eder; sonda
+    tekrarlanan kilit dil kaymasını net biçimde azaltır.
+
+[2] KİMLİK & KİŞİSELLEŞTİRME
+        # KİMLİK
+        Sen bir polen ve alerji asistanısın. Adın "Polen Asistanı".
+        Kullanıcının bulunduğu konum: ${locationName}
+        Kullanıcının alerjik olduğu polenler: ${allergenList}
+    locationName: frontend'in son seçtiği konum adı (şehir / "Seçilen Konum").
+    allergenList: PollenContext.userAllergens'ten, frontend'in seçtiği alerjen
+    anahtarlarının insan-okunur Türkçe listesi.
+
+[3] RAG BAĞLAMI  (k=3, vektör arama)
+    rag/retriever.js → HuggingFace embedding modeli ile, data/vector-store.json
+    içindeki bilimsel makale chunk'larından en alakalı 3 parçayı seçer.
+    Prompt'a şu blok eklenir:
+        ## 📚 İLGİLİ BİLİMSEL KAYNAKLAR
+        [1] <source> (s.<page>) — benzerlik 0.87
+        "<chunk_text>"
+        [2] <source> (s.<page>) — benzerlik 0.81
+        "<chunk_text>"
+        [3] ...
+    Kurallar (kontrollü kullanım):
+      • Tıbbi/biyolojik genel sorularda öncelikle bu bloka dayan.
+      • İngilizce alıntıyı Türkçe'ye çevir, sonra kullan.
+      • Bilgi aldığında metinde (Kaynak [n]) referansı ver.
+
+[4] CANLI POLEN VERİSİ  (anlık, sayısal)
+    fetchPollenSummary({lat,lng,locationName}) ile aynı anda paralel olarak
+    çekilir (Promise.allSettled). Prompt'a şu blok eklenir:
+        ## 🌱 ANLIK POLEN VERİLERİ (bugün)
+        Çimen:  3/5 (orta)
+        Zeytin: 4/5 (yüksek)
+        Pelin:  2/5 (düşük)
+        ...
+    İndeks anlamları sistem promptunda açıkça tanımlanır:
+        0/5=yok · 1/5=çok düşük · 2/5=düşük · 3/5=orta · 4/5=yüksek · 5/5=çok yüksek
+    Maske/içeride kalma tavsiyesi BU bloktaki sayılara dayanır — model
+    "bugün dışarı çıkayım mı?" sorusunda alerjenin değerini okur ve
+    kullanıcının ALERJİK OLDUĞU polenlerin değeri yüksekse içeride
+    kalmayı önerir.
+
+[5] HALÜSİNASYON KARŞITI KURALLAR
+    Promptun "YANIT KURALLARI" bölümünde:
+      • "ANLIK POLEN VERİLERİ" bloğu varsa: konum-spesifik tüm soruları
+        SADECE bu blokta yazılı sayılara dayanarak yanıtla. Tahmin yürütme,
+        genelleme yapma, ezbere konuşma.
+      • Bu blok yoksa: "Şu anda <konum> için canlı polen verisi alamıyorum,
+        biraz sonra tekrar deneyebilirsiniz" de — uydurma sayı verme.
+      • Kaynaklarda VE canlı veride hiç olmayan bilgi soruluyorsa: "Bu konuda
+        elimde net veri yok" de — uydurma yok.
+      • İlaç ismi önerme, dozaj verme, teşhis koyma. Ciddi belirtilerde
+        doktora yönlendir.
+      • Yanıtları 2-3 cümle ile sınırlı tut, çok uzun yazma; emoji kullan,
+        samimi ol.
+
+[6] SOHBET GEÇMİŞİ + DİL KİLİDİ EKİ
+    Son ~10 mesaj history olarak Groq'a iletilir (rol = 'user' | 'assistant').
+    Son kullanıcı mesajına dil kilidi eki yapılır (§1'de açıklandı).
+
+ÜRETİM PARAMETRELERİ
+    temperature = 0.4 (eski 0.7 değerinden indirildi — dil kaymasını ve
+                     yaratıcı sapmayı azaltmak için)
+    max_tokens  = 512
+
+MODEL FALLBACK MATRİSİ
+    Sıralama (öncelik):
+      1) llama-3.3-70b-versatile     — birincil
+      2) meta-llama/llama-4-scout-17b-16e-instruct
+      3) openai/gpt-oss-120b
+      4) openai/gpt-oss-20b          — son çare
+    Her model SIRAYLA tüm anahtarlarla denenir. Bir (anahtar, model) çifti
+    429/401/403 alırsa süreli bloklanır ve sıradaki çifte geçilir. Tüm
+    çiftler tükenirse kullanıcıya 502 + "Lütfen birkaç dakika sonra tekrar
+    deneyin" mesajı dönülür.
+
+NEDEN BU TASARIM
+  • Halüsinasyona karşı katmanlı savunma: dil kilidi + RAG kaynak referansı
+    + numerik canlı veri + açık "veri yoksa uydurma" kuralı.
+  • Asistanın söyledikleri DOĞRULANABİLİR: bilimsel referans veya somut
+    sayısal değere dayanır.
+  • Türkçe deneyim: model markası fark etmeksizin (Llama, GPT-OSS dahil)
+    çıktı Türkçe garantilenir.
+
+
+================================================================================
+4) MİMARİ — KISA ANLATIM
+================================================================================
+
+    React (Vite)  ──HTTPS──▶  Express API  ──▶  PostgreSQL (3 tablo)
+                                  │
+                                  ├──▶  Google Pollen API → Open-Meteo
+                                  │     (anahtar/model matrisi yönetimli)
+                                  │
+                                  ├──▶  Groq LLM  +  RAG retriever
+                                  │     (vektör mağaza + HF embedding)
+                                  │
+                                  └──▶  iyzico (simüle ↔ canlı)
+
+Express katmanı modüler:
+    backend/
+      app.js         — uygulama fabrikası (middleware zinciri)
+      server.js      — dinleme + graceful shutdown (SIGTERM/SIGINT)
+      config/        — env doğrulama (fail-fast), plan limitleri
+      db/            — lazy pg pool, schema.sql, migrate.js
+      middleware/    — security (helmet, CORS, rate-limit), auth, quota,
+                       errorHandler
+      routes/        — auth, usage, membership, pollen, chat
+      services/      — users (CRUD + premium), usage (atomik kota)
+      utils/         — ApiError, asyncHandler, validation, billing
+      payments/      — iyzico (simüle ↔ canlı iskelet)
+      tools/         — pollen orchestrator + sağlayıcılar
+      test/          — node:test + pg-mem (4 test geçti)
+
+Frontend katmanı:
+    frontend/src/
+      pages/CleanDashboard.jsx
+      context/  — ThemeContext, AuthContext, UsageContext, PollenContext
+      components/dashboard/   — Chatbot, MapSelector, ProfileButton, ...
+      components/membership/  — AccountMenu, AuthModal, UpgradeModal,
+                                MembershipModals, membership.css
+      api/client.js  — apiRequest + 401/429 olay yönetimi
+      index.css      — token tabanlı tema (açık + koyu)
+
+
+================================================================================
+5) BENZERLERİNDEN AYRILAN YÖNLER  (Karşılaştırmalı analiz)
+================================================================================
+
+Aşağıdaki tablo, Alerji Takip'i piyasadaki genel polen / hava uygulamalarıyla
+yedi boyutta karşılaştırır.
+
+  ┌─────────────────────────────┬──────────────────────────────┬────────────────────────────────────┐
+  │ Boyut                       │ Genel polen / hava uygulamaları │ Alerji Takip                      │
+  ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+  │ Dil / yerellik              │ Çoğunluk İngilizce ya da batı   │ Tam yerel: 81 il + Türkçe arayüz +│
+  │                             │ odaklı; kısmi Türkçe çevirisi   │ Türkçe sistem promptu (dil kilidi) │
+  ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+  │ Veri sağlayıcı dayanıklılığı│ Genelde tek API; düştüğünde     │ Google Pollen API → Open-Meteo     │
+  │                             │ özellik tamamen kaybolur        │ CAMS otomatik fallback             │
+  ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+  │ AI asistan                  │ Yok ya da kaynaksız genel chat  │ RAG (bilimsel makale + benzerlik   │
+  │                             │                                  │ skoru) + canlı polen değerleri    │
+  │                             │                                  │ promptta + halüsinasyon karşıtı   │
+  │                             │                                  │ kurallar                           │
+  ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+  │ Erişim modeli               │ Tam açık (premium yok) ya da    │ Adil kademe: Misafir 3/3 →         │
+  │                             │ sert paywall (her şey ücretli)  │ Ücretsiz 10/5 → Premium ∞          │
+  ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+  │ Alerjen-özelinde uyarı      │ Genel "polen yüksek" uyarısı    │ Kullanıcı seçtiği alerjenlere göre │
+  │                             │                                  │ kişiselleştirilmiş risk ve tavsiye │
+  ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+  │ Açık + koyu tema            │ Genelde sadece açık             │ Token tabanlı; iki tema yapısal    │
+  │                             │                                  │ olarak eşleşir (aynı isimler)      │
+  ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+  │ Yerel ödeme entegrasyonu    │ Stripe ağırlıklı (kart isteği)  │ iyzico (Türkiye-yerel) — simüle    │
+  │                             │                                  │ moddan canlı moda tek anahtarla   │
+  └─────────────────────────────┴──────────────────────────────┴────────────────────────────────────┘
+
+Ek farklılaştırıcı detaylar (genel uygulamalarda yok):
+
+  •  Asistan halüsinasyon karşıtı katmanlı tasarım
+       — Dil kilidi iki noktada (üstte + son mesaj sonunda)
+       — k=3 RAG kaynaklarına atıflı yanıt zorunluluğu
+       — Numerik canlı veri olmadan tavsiye yasak
+       — temperature = 0.4 (yaratıcı sapmayı azaltır)
+
+  •  Atomik kota algoritması — yarış koşulsuz
+       İki ifadeli desen (INSERT … DO NOTHING + UPDATE … WHERE col < limit
+       RETURNING) FOR UPDATE'siz, hem gerçek PG'de hem pg-mem'de doğrulanabilir.
+       Aynı anda 1000 istek gelse bile sayaç tutarlı kalır.
+
+  •  Profesyonel backend kalite katmanları
+       — App / Server ayrımı (test edilebilirlik)
+       — Merkezi errorHandler + ApiError + asyncHandler (tekrarlı try/catch
+         yok; tutarlı { error, code } yanıt biçimi)
+       — config/env fail-fast (üretimde JWT_SECRET zorunlu — açık güvenlik
+         deliği kaldırıldı)
+       — Graceful shutdown (SIGTERM ile DB havuzu kapatılır)
+       — Lazy DB havuzu + setPoolForTesting (pg-mem ile birim test)
+
+  •  UI tutarlılığı kararları
+       — Yinelenen profil/avatar bloğu tek hesap menüsünde toplanmış
+       — Kullanıcı adı salt-okunur kimlik (kimlik karışıklığı riski yok)
+       — Sıcak beyaz yüzeyler + katmanlı sıcak gölge + üst parlaklık + ince
+         film greni → "AI tarafından üretilmiş gibi" görünümden uzaklaştırma
+
+  •  Otomatik test paketi
+       node:test + pg-mem (in-process Postgres). 4 test, 4 geçti:
+       kullanıcı CRUD + premium yaşam döngüsü + atomik kota (3 senaryo).
+       Tek komut: `npm test` — gerçek Postgres gerektirmez.
+
+
+================================================================================
+6) TEKNİK ÖNEMLİ TASARIM KARARLARI (özet)
+================================================================================
+
+  Karar                            Gerekçe
+  ───────────────────────────────  ────────────────────────────────────────────
+  App / Server ayrımı              app.js export'lanabilir; testte HTTP açmadan
+                                   uygulama nesnesi olarak çağrılabilir.
+  Lazy DB havuzu                   İlk sorguya kadar bağlantı kurulmaz;
+                                   testlerde pg-mem enjekte edilebilir.
+  Atomik kota (FOR UPDATE'siz)     İki ifadeli desen yarış koşulsuz,
+                                   pg-mem'de de doğrulanabilir.
+  Merkezi hata yönetimi            asyncHandler + ApiError → tekrarlı
+                                   try/catch yok; { error, code } tutarlı.
+  config/env fail-fast             Eksik JWT_SECRET açılışta durur; eski
+                                   'fallback-secret-key' deliği kaldırıldı.
+  Plan token'da bilgi, doğrulama   Token 7 gün; premium yükseltme bayatlamasın
+  DB'den                           diye kota anında DB'den okunur.
+  Çoklu sağlayıcı fallback         Polen ve AI sağlayıcıları tek noktadan
+                                   yönetilir; tek sağlayıcı çökse bile sistem
+                                   ayakta kalır.
+  Olay tabanlı frontend            auth:unauthorized, quota:exceeded,
+                                   usage:changed olayları ile bağlamlar
+                                   gevşek bağlı; modaller koordineli açılır.
+  Token tabanlı tema sistemi       Açık/koyu temanın yapısal eşleşmesi;
+                                   tek değişiklikle tüm bileşenler güncellenir.
+  jsonb (allergies, favorites)     Şema esnekliği; ek join tablosu gereksiz.
+
+
+================================================================================
+7) ZORUNLU GEREKSİNİMLER → KOD EŞLEMESİ  (denetim sonucu: 6/6 ✅)
+================================================================================
+
+  Gereksinim                              Karşılık
+  ──────────────────────────────────────  ──────────────────────────────────────
+  1. React kullanımı                      ✅  React 19 + Vite + Hooks/Context
+  2. Kullanıcı yönetimi + form valid.     ✅  routes/auth.js + utils/validation
+                                             + AuthModal.jsx (5 farklı kural)
+  3. AI server-side + dinamik UI          ✅  routes/chat.js (Groq + RAG) →
+                                             Chatbot.jsx canlı yansıma
+  4. Dinamik Dashboard (grafik/tablo)     ✅  CleanDashboard: Recharts AreaChart
+                                             + 5g tahmin + hero — hardcoded yok
+  5. REST + DB + 3+ endpoint + AI SS      ✅  Express + PostgreSQL + 16 endpoint
+  6. Yaşam döngüsü (analiz·tasarım·       ✅  docs/REQUIREMENTS · DESIGN ·
+     geliştirme·test·deployment)              TESTING + backend/test +
+                                             DEPLOY.md + ecosystem.config.cjs
+
+
+================================================================================
+8) BÖLGE/TEKNİK İSTATİSTİKLER
+================================================================================
+
+  REST endpoint sayısı           : 16
+  Veritabanı tablosu             : 3 (users, usage_daily, payments)
+  Otomatik test                  : 4 / 4 geçti
+  Polen sağlayıcı fallback       : 2 (Google → Open-Meteo)
+  AI model fallback              : 4 model × N anahtar matrisi
+  Türkiye iller                  : 81 (tam liste)
+  Backend kaynak modülü          : 10 ana klasör (app/server/config/db/mw/
+                                   routes/services/utils/payments/tools)
+  Frontend bileşen klasörü       : 4 (dashboard, membership, context, pages)
+  CSS token sayısı (tema başına) : ~40 (yüzeyler, kenarlık, accent, risk,
+                                   gölgeler, radius, transition...)
+
+
+================================================================================
+9) GELECEKTEKİ GELİŞTİRMELER
+================================================================================
+
+  • E-posta doğrulama (kayıt sonrası onay maili)
+  • Şifre sıfırlama (token ile reset link)
+  • Hesap-bağlı alerjen senkronizasyonu (şu an PollenContext localStorage'da)
+  • Push bildirim (yüksek riskli günlerde uyarı)
+  • Premium çoklu fiyat planı (aylık / yıllık)
+  • Admin paneli (kullanıcı + ödeme görünümü)
+  • Test kapsamını genişletmek: route entegrasyonu (supertest),
+    frontend kritik akışlar (Playwright)
+  • Localization (İngilizce arayüz seçeneği)
+  • PWA (offline cache + ana ekrana ekleme)
+  • Observability (yapısal log + Prometheus metrik)
+
+
+================================================================================
+10) SONUÇ
+================================================================================
+
+Alerji Takip; küçük ve net bir hedef kitleye (Türkiye'deki polen alerjisi
+olan kullanıcılar) yönelik fakat altında **üretim kalitesinde** bir altyapı
+barındıran tam-yığın bir uygulamadır. Üç ana farkı belirleyici:
+
+  1) AI asistanına akan değerler katmanlı ve denetimli (dil kilidi + RAG +
+     numerik canlı veri + halüsinasyon karşıtı kurallar). Bu, "kaynaksız
+     genel chatbot" kategorisinden açıkça ayrılır.
+
+  2) Atomik kota algoritması ve adil üç katmanlı erişim modeli; çoğu
+     uygulamadaki "ya tamamen ücretsiz ya tamamen paywall" ikileminin
+     ötesinde, gerçek kullanım sinyali toplar ve dönüşümü doğal hale getirir.
+
+  3) Profesyonel backend disiplini (app/server ayrımı, merkezi hata yönetimi,
+     fail-fast env doğrulama, çoklu sağlayıcı fallback, otomatik testler,
+     graceful shutdown) — bu seviye, niş bir polen uygulamasında nadiren
+     görülür.
+
+Sonuç olarak: niş bir problem için sıradan değil, "düşünülmüş" bir çözüm.
+
+================================================================================
+                              BELGE SONU
+================================================================================
