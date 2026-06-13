@@ -1,28 +1,56 @@
-// ============================================================
-// PostgreSQL bağlantı havuzu
-// Bağlantı .env içindeki DATABASE_URL ile yapılır:
-//   DATABASE_URL=postgres://kullanici:sifre@localhost:5432/alerjitakvim
-// Yönetilen bir Postgres (SSL isteyen) kullanıyorsanız: DATABASE_SSL=true
-// ============================================================
-
+// PostgreSQL connection pool
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const { Pool } = require('pg');
 
 let _pool = null;
 
+// SSL config:
+//   DATABASE_SSL=false or unset -> no SSL (local dev).
+//   DATABASE_SSL=true + DATABASE_CA_CERT=/path/to/ca.pem -> full cert verification (RECOMMENDED).
+//   DATABASE_SSL=true (no cert) -> rejectUnauthorized:true (secure default).
+//     Managed providers (Supabase, Neon) that bundle their CA in Node's root store work fine.
+//     If the provider uses a custom CA, set DATABASE_CA_CERT.
+//   DATABASE_SSL_REJECT_UNAUTHORIZED=false -> restores old unsafe behaviour (NOT RECOMMENDED).
+function buildSslConfig() {
+    if (process.env.DATABASE_SSL !== 'true') return undefined;
+
+    const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false';
+    if (!rejectUnauthorized) {
+        console.warn(
+            '[DB] WARNING: DATABASE_SSL_REJECT_UNAUTHORIZED=false -- ' +
+            'SSL certificate verification disabled. Vulnerable to MITM. ' +
+            'Use only as a temporary migration step.'
+        );
+    }
+
+    const certPath = process.env.DATABASE_CA_CERT;
+    if (certPath) {
+        try {
+            const ca = fs.readFileSync(certPath, 'utf8');
+            return { rejectUnauthorized, ca };
+        } catch (err) {
+            console.error('[DB] Cannot read DATABASE_CA_CERT:', certPath, err.message);
+            throw new Error('[DB] Failed to load SSL CA certificate: ' + certPath);
+        }
+    }
+
+    return { rejectUnauthorized };
+}
+
 function buildPool() {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
-        console.warn('[DB] ⚠️  DATABASE_URL tanımlı değil — PostgreSQL bağlantısı kurulamayacak. backend/.env dosyasını kontrol edin.');
+        console.warn('[DB] WARNING: DATABASE_URL is not set -- PostgreSQL connection unavailable. Check backend/.env');
     }
     const pool = new Pool({
         connectionString,
-        ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+        ssl: buildSslConfig(),
         max: parseInt(process.env.DB_POOL_MAX || '10', 10),
     });
     pool.on('error', (err) => {
-        console.error('[DB] Beklenmeyen havuz hatası:', err.message);
+        console.error('[DB] Unexpected pool error:', err.message);
     });
     return pool;
 }
@@ -32,7 +60,6 @@ function getPool() {
     return _pool;
 }
 
-// Test amaçlı havuz enjeksiyonu (pg-mem vb. ile birim test için).
 function setPoolForTesting(pool) {
     _pool = pool;
 }
@@ -41,13 +68,11 @@ async function query(text, params) {
     return getPool().query(text, params);
 }
 
-// Bağlantının ulaşılabilirliğini kontrol eder (startup ping için).
 async function ping() {
     await getPool().query('SELECT 1');
     return true;
 }
 
-// Havuzu düzgünce kapatır (graceful shutdown — SIGTERM/SIGINT).
 async function end() {
     if (_pool) {
         await _pool.end();
