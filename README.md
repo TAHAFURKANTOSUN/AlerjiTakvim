@@ -57,10 +57,10 @@ JWT_SECRET=<openssl rand -hex 32 ile üret>
 PORT=3001
 
 # Google Pollen API — çoklu anahtar fallback
-POLLEN_API_KEYS=AIzaSy...birinci,AIzaSy...ikinci
+POLLEN_API_KEYS=birinci,ikinci
 
 # Groq LLM — virgülle ayır
-GROQ_API_KEYS=gsk_birinci,gsk_ikinci
+GROQ_API_KEYS=birinci,ikinci
 GROQ_MODELS=llama-3.3-70b-versatile,meta-llama/llama-4-scout-17b-16e-instruct,openai/gpt-oss-120b,openai/gpt-oss-20b
 ```
 
