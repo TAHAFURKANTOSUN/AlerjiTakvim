@@ -102,10 +102,15 @@ export async function fetchPollen(lat, lng, days = 5) {
     return data;
 }
 
-export async function sendChatMessage(message, locationName, lat, lng, userAllergens, history) {
+// Hava durumu + hava kalitesi (Open-Meteo, ücretsiz, anahtar gerektirmez)
+export async function fetchEnvironment(lat, lng) {
+    return await apiRequest(`/api/environment?lat=${lat}&lng=${lng}`);
+}
+
+export async function sendChatMessage(message, locationName, lat, lng, userAllergens, history, clientWeather, clientAqi) {
     const data = await apiRequest('/api/chat', {
         method: 'POST',
-        body: JSON.stringify({ message, locationName, lat, lng, userAllergens, history }),
+        body: JSON.stringify({ message, locationName, lat, lng, userAllergens, history, clientWeather, clientAqi }),
     });
     window.dispatchEvent(new CustomEvent('usage:changed'));
     return data;

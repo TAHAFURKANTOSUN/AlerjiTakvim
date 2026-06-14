@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { usePollen } from '../../context/PollenContext';
 import { sendChatMessage } from '../../api/client';
 
 export default function Chatbot() {
-  const { selectedLocation, userAllergens } = usePollen();
+  const { selectedLocation, userAllergens, weather, aqi } = usePollen();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([
     { from: 'bot', text: 'Merhaba! 🌿 Ben Polen Asistanı. Polen ve alerji konusundaki sorularınızı yanıtlayabilirim.' },
@@ -53,7 +53,9 @@ export default function Chatbot() {
         selectedLocation.lat,
         selectedLocation.lng,
         userAllergens,
-        historyForApi
+        historyForApi,
+        weather?.summary ?? null,
+        aqi?.summary ?? null
       );
       setMessages(prev => [...prev, { from: 'bot', text: data.reply }]);
     } catch (err) {

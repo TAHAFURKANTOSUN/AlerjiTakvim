@@ -14,6 +14,7 @@ import MapSelector from '../components/dashboard/MapSelector';
 import DashboardProfilePage from '../components/dashboard/DashboardProfilePage';
 import ThemeToggle from '../components/dashboard/ThemeToggle';
 import AccountMenu from '../components/membership/AccountMenu';
+import EnvCards from '../components/dashboard/EnvCards';
 
 // ─── HELPER: µg/m³ → yoğunluk etiketi ──────────────────────────────
 function getIntensityLevel(value) {
@@ -132,6 +133,7 @@ export default function CleanDashboard() {
     selectedLocation, pollenData, userAllergens, locations,
     updateLocation, goHome, showAllPollens, setShowAllPollens,
     currentView, setCurrentView,
+    pollenLoading, weather, aqi, envLoading,
   } = usePollen();
 
   // Mevcut saatlik veri
@@ -346,9 +348,14 @@ export default function CleanDashboard() {
         </section>
         )}
 
-        {/* ═══════════ HAVA DURUMU — TEK SATIR ═══════════ */}
-        {/* (Hava durumu şeridi kaldırıldı — uydurma veriydi.
-            Açık hava verisi gerektiğinde Open-Meteo /weather endpoint'i bağlanacak.) */}
+        {/* ═══════════ ÇEVRE ÖZETİ (3 KART) ═══════════ */}
+        <EnvCards
+          alerts={alerts}
+          pollenLoading={pollenLoading}
+          weather={weather}
+          aqi={aqi}
+          envLoading={envLoading}
+        />
 
         {/* ═══════════ SAATLİK GRAFİK ═══════════ */}
         <section className="clean-chart-section" aria-label="24 saatlik polen yoğunluğu">

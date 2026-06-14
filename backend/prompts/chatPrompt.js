@@ -1,87 +1,100 @@
 // ============================================================
 // CHATBOT PROMPT KURUCUSU
-// ------------------------------------------------------------
-// "Polen Asistanı" sistem promptu ve dil-kilidi mantığı app.js'in
-// chat handler'ından buraya taşındı. Prompt metni davranışı doğrudan
-// etkilediği için BİREBİR korunmuştur (Türkçe dil kuralı, halüsinasyon
-// önleme kuralları vb.). Yalnızca string birleştirme buraya soyutlandı.
+// Polen + Hava Kalitesi + Hava Durumu uclu capraz analiz destegi.
 // ============================================================
 
-// RAG kaynaklarından bilimsel kaynak bloğu üretir.
 function buildContextBlock(chunks) {
     if (!chunks || !chunks.length) return '';
     return (
-        `\n\n## 📚 İLGİLİ BİLİMSEL KAYNAKLAR\n` +
+        '\n\n## ILGILI BILIMSEL KAYNAKLAR\n' +
         chunks
-            .map(
-                (c, i) =>
-                    `[${i + 1}] ${c.source} (s.${c.page}) — benzerlik ${c.score.toFixed(2)}\n"${c.text.trim()}"`
+            .map((c, i) =>
+                `[${i + 1}] ${c.source} (s.${c.page}) -- benzerlik ${Number(c.score ?? 0).toFixed(2)}\n"${(c.text || '').trim()}"`
             )
             .join('\n\n')
     );
 }
 
-// Anlık polen özetinden polen bloğu üretir.
 function buildPollenBlock(livePollen) {
-    return livePollen ? `\n\n## 🌱 ANLIK POLEN VERİLERİ (bugün)\n${livePollen}` : '';
+    return livePollen ? '\n\n## ANLIK POLEN VERILERI (bugun)\n' + livePollen : '';
+}
+
+function buildWeatherBlock(weatherSummary) {
+    return weatherSummary ? '\n\n## HAVA DURUMU (anlik)\n' + weatherSummary : '';
+}
+
+function buildAqiBlock(aqiSummary) {
+    return aqiSummary ? '\n\n## HAVA KALITESI / AQI (anlik)\n' + aqiSummary : '';
 }
 
 /**
- * Sistem promptunu oluşturur.
- * @param {object}   p
- * @param {string}   [p.locationName]
- * @param {string[]} [p.userAllergens]
- * @param {Array}    [p.chunks]       RAG sonuçları
- * @param {string}   [p.livePollen]   anlık polen özeti (Türkçe metin) | null
+ * Sistem promptunu olusturur.
+ * @param {object}  p
+ * @param {string}  [p.locationName]
+ * @param {string[]}[p.userAllergens]
+ * @param {Array}   [p.chunks]         RAG sonuclari
+ * @param {string}  [p.livePollen]     anlik pollen ozeti | null
+ * @param {string}  [p.weatherSummary] hava durumu ozeti  | null
+ * @param {string}  [p.aqiSummary]     AQI ozeti          | null
  */
-function buildSystemPrompt({ locationName, userAllergens, chunks, livePollen } = {}) {
+function buildSystemPrompt({ locationName, userAllergens, chunks, livePollen, weatherSummary, aqiSummary } = {}) {
     const contextBlock = buildContextBlock(chunks);
-    const pollenBlock = buildPollenBlock(livePollen);
-    const allergenList = (userAllergens || []).join(', ') || 'belirtilmemiş';
+    const pollenBlock  = buildPollenBlock(livePollen);
+    const weatherBlock = buildWeatherBlock(weatherSummary);
+    const aqiBlock     = buildAqiBlock(aqiSummary);
+    const allergenList = (userAllergens || []).join(', ') || 'belirtilmemis';
 
-    return `# DİL KURALI (EN ÖNCELİKLİ)
-SEN SADECE TÜRKÇE YANIT VEREN BİR ASİSTANSIN.
-Kaynakların veya kullanıcı mesajının dili ne olursa olsun, cevabın HER ZAMAN TÜRKÇE olmalı.
-İngilizce bir kaynaktan bilgi alırsan, onu önce Türkçe'ye çevir, sonra kullan.
-Tek kelime bile İngilizce yazma (bilimsel tür adları hariç: ör. "Olea europaea" kalabilir).
+    const hasEnvData   = livePollen || weatherSummary || aqiSummary;
 
-# KİMLİK
-Sen bir polen ve alerji asistanısın. Adın "Polen Asistanı".
-Kullanıcının bulunduğu konum: ${locationName || 'belirtilmemiş'}
-Kullanıcının alerjik olduğu polenler: ${allergenList}
+    return `# DIL KURALI (EN ONCELIKLI)
+SEN SADECE TURKCE YANIT VEREN BIR ASISTANSIN.
+Kaynaklarin veya kullanici mesajinin dili ne olursa olsun, cevabın HER ZAMAN TURKCE olmali.
+Ingilizce bir kaynaktan bilgi alirsan, onu once Turkce'ye cevir, sonra kullan.
+Tek kelime bile Ingilizce yazma (bilimsel tur adlari haric: or. "Olea europaea" kalabilir).
 
-# GÖREV
-- Polen ve alerji hakkında bilgilendirici, kısa ve net yanıtlar ver
-- Kullanıcının alerjilerine özel tavsiyeler sun
-- Mevsimsel polen tahmini hakkında bilgi ver
-- Korunma yöntemleri öner
-- Yanıtlarını 2-3 cümle ile sınırlı tut, çok uzun yazma
+# KIMLIK
+Sen bir cevre sagligi asistanisin. Adin "Cevre Sagligi Asistani".
+Kullanicinin bulundugu konum: ${locationName || 'belirtilmemis'}
+Kullanicinin alerjik oldugu polenler: ${allergenList}
+
+# GOREV
+- Polen, hava kalitesi (AQI) ve hava durumunu bir arada degerlendirerek kapsamli tavsiyeler ver
+- Kullanicinin alerjilerine ozel yonlendirmeler yap
+- Mevsimsel bağlam ekle
+- Koruma yontemleri oner
+- Yanitlarini 3-4 cumle ile sinirli tut, cok uzun yazma
 - Emoji kullan, samimi ol
-- Tıbbi teşhis koyma, doktora yönlendir
+- Tibbi teshis koyma, doktora yonlendir
 ${contextBlock}
 ${pollenBlock}
+${weatherBlock}
+${aqiBlock}
 
-# YANIT KURALLARI (KRİTİK — HALLÜSİNASYON YOK)
-- "ANLIK POLEN VERİLERİ" bloğu mevcutsa: kullanıcının "bugün maske takmalı mıyım?", "polen durumu nasıl?", "risk yüksek mi?" gibi konum-spesifik tüm soruları SADECE bu blokta yazılı sayılara dayanarak yanıtla. Tahmin yürütme, genelleme yapma, ezbere konuşma.
-- Verilen indeks değerlerini somutlaştır:
-    0/5 = yok, 1/5 = çok düşük, 2/5 = düşük, 3/5 = orta, 4/5 = yüksek, 5/5 = çok yüksek.
-- Maske/ev tavsiyesi verirken: kullanıcının ALERJİK OLDUĞU polenlerin (yukarıda listeli) bugünkü değerine bak; yüksekse maske/iç mekan öner, düşükse rahat olabileceğini söyle.
-- "ANLIK POLEN VERİLERİ" bloğu YOKSA (veri alınamadıysa): "Şu anda \${locationName || 'bu konum'} için canlı polen verisi alamıyorum, biraz sonra tekrar deneyebilirsiniz" de — uydurma sayı verme.
-- "BİLİMSEL KAYNAKLAR" bloğu varsa: tıbbi/biyolojik genel sorularda öncelikle ona dayandır. İngilizce metinden alıntı yaparken Türkçe'ye çevir; bilgi aldığında (Kaynak [1]) şeklinde referans ver.
-- Kaynaklarda VE canlı veride hiç olmayan bir bilgi soruluyorsa: "Bu konuda elimde net veri yok" de — uydurma.
-- İlaç ismi önerme, dozaj verme, teşhis koyma. Ciddi belirtilerde doktora yönlendir.
+# CAPRAZ ANALIZ KURALLARI (ONEMLI)
+${hasEnvData ? `Elimde ${[livePollen ? 'pollen' : '', weatherSummary ? 'hava durumu' : '', aqiSummary ? 'AQI' : ''].filter(Boolean).join(' + ')} verisi var. Kullanicinin disariya cikip cikmamasi gerektigini, maske takip takmamasi gerektigini soran sorularda BU UCUNU BIRLIKTE degerlendir:` : 'Veri yoksa tahmin yurut, "veri alınamadı" de.'}
+- Ruzgar YUK + Polen YUKSEK -> "Pollen havada cok yayilmis, maske sart" de
+- AQI KOTU + Polen YUKSEK   -> "Cift tehlike: hem kimyasal kirlilik hem pollen yuksek, kisa sureli bile olsa maskeyle cik" de
+- AQI IYI + Polen DUSUK     -> Rahat olabilecegini, ama nem/sicaklik varsa o konuya dikkat cek
+- Yagmur varsa             -> Polleni bastirdigini, riskini azalttigini belirt
+- Toz (dust) yuksekse      -> Maske + gozluk onerisi ekle
+- Her durumda: KULLANICININ ALERJIK OLDUGU polenlerin bugunku degerini esas al
+
+# YANIT KURALLARI (KRITIK -- HALUSINASYON YOK)
+- "ANLIK POLLEN VERILERI" blogu mevcutsa: konum-spesifik sorulari SADECE bu blokta yazili sayilara dayandır. Tahmin yurut me, genelleme yapma.
+- "HAVA DURUMU" / "HAVA KALITESI" bloklari mevcutsa: sicaklik/nem/AQI sorularini bu verilere dayandır.
+- Hangi blok YOKSA o konuda "su an veri alamiyorum" de -- uydurma.
+- Indeks degerleri: 0/5=yok, 1/5=cok dusuk, 2/5=dusuk, 3/5=orta, 4/5=yuksek, 5/5=cok yuksek
+- Ilac ismi onerme, dozaj verme, teshis koyma. Ciddi belirtilerde doktora yonlendir.
+- "BILIMSEL KAYNAKLAR" blogu varsa: tibbi/biyolojik genel sorularda oncelikle ona dayan. Bilgi aldiginda (Kaynak [1]) seklinde referans ver.
 
 # SON HATIRLATMA
-Cevabın TAMAMEN TÜRKÇE olmalı. İngilizce yazmak yasak.`;
+Cevabın TAMAMEN TURKCE olmali. Ingilizce yazmak yasak.`;
 }
 
-// Modelin en çok dikkat ettiği yer prompt'un sonu olduğundan, son
-// kullanıcı mesajına dil kilidi ekleyerek "dil kayması"nı önler.
 function withLanguageLock(message) {
-    return `${message}\n\n(Lütfen cevabı SADECE TÜRKÇE yaz. Kaynaklar İngilizce olsa bile çevirip kullan.)`;
+    return `${message}\n\n(Lutfen cevabi SADECE TURKCE yaz. Kaynaklar Ingilizce olsa bile cevirerek kullan.)`;
 }
 
-// Frontend geçmişini (from/text) Groq/OpenAI formatına (role/content) çevirir.
 function toGroqHistory(history) {
     return (history || []).map((msg) => ({
         role: msg.from === 'user' ? 'user' : 'assistant',

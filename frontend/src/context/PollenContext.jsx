@@ -3,7 +3,7 @@ import { TURKISH_PROVINCES_SORTED as LOCATIONS } from '../data/turkishProvinces'
 import { ALLERGEN_OPTIONS } from '../data/staticReference';
 import { adaptLivePollen } from '../data/livePollenAdapter';
 import { loadLocation, saveLocation } from '../utils/locationStorage';
-import { fetchPollen } from '../api/client';
+import { fetchPollen, fetchEnvironment } from '../api/client';
 
 const PollenContext = createContext(null);
 
@@ -43,6 +43,12 @@ export function PollenProvider({ children }) {
   const [livePollen, setLivePollen] = useState(null);
   const [pollenLoading, setPollenLoading] = useState(false);
   const [pollenError, setPollenError] = useState(null);
+
+  // ── Hava durumu + hava kalitesi (Open-Meteo) ──
+  const [weather, setWeather] = useState(null);   // { data, summary } | null
+  const [aqi, setAqi] = useState(null);           // { data, summary } | null
+  const [envLoading, setEnvLoading] = useState(false);
+
   // Yarış koşulu engeli: yalnızca SON istek yanıtı uygulanır
   const requestIdRef = useRef(0);
 
@@ -50,27 +56,44 @@ export function PollenProvider({ children }) {
     // /api/pollen artık public — login olmasan da çalışır.
     const myReqId = ++requestIdRef.current;
     setPollenLoading(true);
+    setEnvLoading(true);
     setPollenError(null);
     try {
-      const data = await fetchPollen(lat, lng, 1);
-      if (myReqId === requestIdRef.current) setLivePollen(data);
-    } catch (err) {
-      if (myReqId !== requestIdRef.current) return;
-      console.warn('[Pollen] fetch hatası:', err?.message || err);
+      // Pollen + Çevre verilerini paralel çek; biri başarısız olsa diğeri sürer
+      const [pollenResult, envResult] = await Promise.allSettled([
+        fetchPollen(lat, lng, 1),
+        fetchEnvironment(lat, lng),
+      ]);
 
-      setLivePollen(null);
-      // 401 için kullanıcı dostu mesaj — apiRequest zaten event fırlattı,
-      // AuthContext kullanıcıyı login'e yönlendirecek. Biz sadece UI'da
-      // anlamlı bir geçici metin gösteriyoruz.
-      if (err?.status === 401) {
-        setPollenError('Oturum sona erdi, lütfen tekrar giriş yapın');
-      } else if (err?.status === 429) {
-        setPollenError('API istek limiti aşıldı, kısa süre sonra tekrar deneyin');
+      if (myReqId !== requestIdRef.current) return; // eski istek, yok say
+
+      if (pollenResult.status === 'fulfilled') {
+        setLivePollen(pollenResult.value);
       } else {
-        setPollenError(err?.error || err?.message || 'Polen verisi alınamadı');
+        const err = pollenResult.reason;
+        setLivePollen(null);
+        if (err?.status === 401) {
+          setPollenError('Oturum sona erdi, lütfen tekrar giriş yapın');
+        } else if (err?.status === 429) {
+          setPollenError('API istek limiti aşıldı, kısa süre sonra tekrar deneyin');
+        } else {
+          setPollenError(err?.error || err?.message || 'Polen verisi alınamadı');
+        }
+        console.warn('[Pollen] fetch hatası:', err?.message || err);
+      }
+
+      if (envResult.status === 'fulfilled') {
+        setWeather(envResult.value.weather ?? null);
+        setAqi(envResult.value.aqi ?? null);
+      } else {
+        console.warn('[Env] fetch hatası:', envResult.reason?.message);
+        // hava/AQI başarısız olsa da UI çalışmaya devam eder
       }
     } finally {
-      if (myReqId === requestIdRef.current) setPollenLoading(false);
+      if (myReqId === requestIdRef.current) {
+        setPollenLoading(false);
+        setEnvLoading(false);
+      }
     }
   }, []);
 
@@ -186,6 +209,10 @@ export function PollenProvider({ children }) {
     livePollen,
     pollenLoading,
     pollenError,
+    // Hava durumu + hava kalitesi (Open-Meteo)
+    weather,
+    aqi,
+    envLoading,
     refreshLivePollen: () => fetchLivePollenFor(selectedLocation.lat, selectedLocation.lng),
     // Actions
     updateLocation,
@@ -202,7 +229,9 @@ export function PollenProvider({ children }) {
     locations: LOCATIONS,
   }), [selectedLocation, userAllergens, pollenData, showAllPollens, currentView,
        userName, userAvatar,
-       livePollen, pollenLoading, pollenError, fetchLivePollenFor,
+       livePollen, pollenLoading, pollenError,
+       weather, aqi, envLoading,
+       fetchLivePollenFor,
        updateLocation, updateLocationFromCoords, goHome,
        toggleAllergen, setAllergens,
        setUserName, setUserAvatar]);

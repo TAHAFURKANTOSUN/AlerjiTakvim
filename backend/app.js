@@ -20,6 +20,7 @@ const authRouter = require('./routes/auth');
 const usageRouter = require('./routes/usage');
 const membershipRouter = require('./routes/membership');
 const pollenRouter = require('./routes/pollen');
+const environmentRouter = require('./routes/environment');
 const chatRouter = require('./routes/chat');
 
 const app = express();
@@ -64,6 +65,7 @@ app.use('/api', authRouter);
 app.use('/api/usage', usageRouter);
 app.use('/api/membership', membershipRouter);
 app.use('/api/pollen', pollenRouter);
+app.use('/api/environment', environmentRouter);
 app.use('/api/chat', chatRouter);
 
 // ── 404 + merkezi hata yönetimi (EN SONDA) ──
