@@ -1,238 +1,294 @@
-# Alerji Takvim — Deployment Rehberi
+# 🌿 Alerji Takip
 
-AWS EC2 (Ubuntu 22.04+) üzerinde Nginx + PM2 ile yayına alma.
+**Polen Takip Paneli** — yapay zekâ destekli, Türkiye geneli alerji asistanı.
 
-## 0. Sunucu hazırlığı (tek seferlik)
+Tam-yığın web uygulaması: React 19 frontend, Express + PostgreSQL backend,
+Groq LLM + RAG sohbet asistanı, Google Pollen API + Open-Meteo otomatik
+fallback'i ve iyzico-uyumlu üyelik sistemi.
 
+![Node](https://img.shields.io/badge/node-%E2%89%A518-green)
+![PostgreSQL](https://img.shields.io/badge/postgres-%E2%89%A514-blue)
+![React](https://img.shields.io/badge/react-19-61dafb)
+![Lisans](https://img.shields.io/badge/lisans-MIT-blue)
+
+> ℹ️ Deployment talimatları için ayrı [`DEPLOY.md`](DEPLOY.md) belgesine
+> bakın (AWS EC2 + Nginx + PM2 ile yayına alma).
+
+---
+
+## ✨ Özellikler
+
+- **🗺️ Konum-spesifik polen verisi** — 81 il + harita üzerinden serbest konum
+  seçimi. Google Pollen API birincil, Open-Meteo CAMS Europe otomatik
+  fallback'i (anahtarsız).
+- **🤖 AI Polen Asistanı** — Groq (Llama 3.3-70B, Llama-4-Scout, GPT-OSS) +
+  RAG destekli sohbet. Bilimsel makale kaynakları + anlık polen verileri
+  sistem promptuna canlı enjekte. Türkçe dil kilidi, halüsinasyon karşıtı
+  kurallar.
+- **📈 Dinamik dashboard** — 24 saatlik Recharts grafiği, 5 günlük tahmin
+  şeridi, alerjen-özelinde risk uyarısı, mevsimsel ipucu kartı.
+- **🎫 Üç katmanlı üyelik & günlük kota:**
+
+  | Plan      | Polen / gün | Sohbet / gün |
+  | --------- | ----------- | ------------ |
+  | Misafir   | 3           | 3            |
+  | Ücretsiz  | 10          | 5            |
+  | Premium   | sınırsız    | sınırsız     |
+
+- **💳 iyzico ödeme entegrasyonu** — simüle modda hazır; canlıya tek `.env`
+  ayarıyla geçilir.
+- **🌙 Açık + koyu tema** — token tabanlı, iki tema yapısal olarak eşleşir.
+- **🔒 Güvenlik** — bcrypt + JWT (7 gün), helmet, rate-limit, CORS allowlist,
+  env doğrulama (fail-fast), PostgreSQL TLS desteği.
+
+---
+
+## 🧱 Teknoloji yığını
+
+| Katman      | Teknoloji                                          |
+| ----------- | -------------------------------------------------- |
+| Frontend    | React 19, Vite, Recharts, React-Leaflet, Tailwind 4 |
+| Backend     | Node ≥18, Express, helmet, express-rate-limit      |
+| Auth        | bcryptjs, jsonwebtoken                             |
+| Veritabanı  | PostgreSQL (`pg` pool)                             |
+| AI / RAG    | groq-sdk, HuggingFace embedding, vector-store.json |
+| Polen       | Google Pollen API + Open-Meteo CAMS Europe         |
+| Ödeme       | iyzipay (opsiyonel)                                |
+| Test        | node:test + pg-mem                                 |
+| DevOps      | PM2, Nginx                                         |
+
+---
+
+## 🚀 Hızlı başlangıç (yerel geliştirme)
+
+> Üretim için: [`DEPLOY.md`](DEPLOY.md).
+
+### Önkoşullar
+- Node.js ≥ 18
+- PostgreSQL ≥ 14 (yerel veya yönetilen — Supabase, Neon, AWS RDS vb.)
+- (Opsiyonel) Google Pollen API anahtarı — yoksa Open-Meteo'ya düşer
+- (Opsiyonel) Groq API anahtar(lar)ı — sohbet için zorunlu
+
+### 1. Repoyu klonla
 ```bash
-# Sistem güncelle
-sudo apt update && sudo apt upgrade -y
-
-# Node.js 20 LTS (NodeSource)
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Nginx + git + build araçları
-sudo apt install -y nginx git build-essential
-
-# PM2 global
-sudo npm install -g pm2
-
-# Node sürümünü doğrula
-node -v   # v20.x
-npm -v
-nginx -v
-pm2 -v
+git clone https://github.com/TAHAFURKANTOSUN/AlerjiTakvim.git
+cd AlerjiTakvim
 ```
 
-## 1. Projeyi sunucuya çek
-
+### 2. Veritabanı hazırla
 ```bash
-# Standart konum
-sudo mkdir -p /var/www
-cd /var/www
-sudo git clone https://github.com/<kullanıcı>/alerji-takvim.git
-sudo chown -R $USER:$USER /var/www/alerji-takvim
-cd /var/www/alerji-takvim
+createdb alerjitakvim
+# veya pgAdmin / DBeaver üzerinden boş bir DB oluştur
 ```
 
-## 2. Backend kurulum
-
+### 3. Backend
 ```bash
-cd /var/www/alerji-takvim/backend
-npm install --omit=dev      # sadece prod bağımlılıkları
-```
-
-`.env` dosyasını oluştur (`.env.example` referans alınarak):
-
-```bash
-nano /var/www/alerji-takvim/backend/.env
-```
-
-İçeriği:
-
-```ini
-# Auth
-JWT_SECRET=<openssl rand -hex 32 ile üret>
-PORT=3001
-
-# Google Pollen API — çoklu anahtar fallback
-POLLEN_API_KEYS=birinci,ikinci
-
-# Groq LLM — virgülle ayır
-GROQ_API_KEYS=birinci,ikinci
-GROQ_MODELS=llama-3.3-70b-versatile,meta-llama/llama-4-scout-17b-16e-instruct,openai/gpt-oss-120b,openai/gpt-oss-20b
-```
-
-Yetkileri kıs:
-
-```bash
-chmod 600 /var/www/alerji-takvim/backend/.env
-```
-
-### RAG vector index (chatbot için)
-
-```bash
-cd /var/www/alerji-takvim
-node rag/build-index.js   # ~280 vektör, 2.4MB JSON
-```
-
-## 3. PM2 ile backend'i başlat
-
-```bash
-cd /var/www/alerji-takvim
-mkdir -p logs
-
-# Production modda başlat
-pm2 start ecosystem.config.cjs --env production
-
-# Boot'ta otomatik başlama
-pm2 startup           # verdiği "sudo env PATH=... pm2 startup" komutunu çalıştır
-pm2 save              # mevcut süreçleri kaydet
-
-# Doğrula
-pm2 status
-pm2 logs alerji-takvim-backend --lines 30
-```
-
-Beklenen çıktı:
-```
-🌿 Alerji Takip Backend çalışıyor: http://localhost:3001
-   Pollen Sağlayıcıları:
-     • Google Pollen API: ✅ 2 anahtar yüklü (aktif: #1)
-     • Open-Meteo (CAMS Europe): ✅ Hazır
-```
-
-## 4. Frontend build
-
-```bash
-cd /var/www/alerji-takvim/frontend
+cd backend
+cp .env.example .env        # ardından .env'yi düzenle (aşağıya bak)
 npm install
-npm run build         # → dist/ klasörü oluşur
-ls -lh dist/          # index.html + assets/
+npm run migrate             # 3 tabloyu oluşturur (users, usage_daily, payments)
+npm start                   # http://localhost:3001
 ```
 
-## 5. Nginx konfigürasyonu
+**`backend/.env` zorunlu alanlar:**
+```env
+JWT_SECRET=cok-uzun-rastgele-bir-string-en-az-16-karakter
+DATABASE_URL=postgres://kullanici:sifre@localhost:5432/alerjitakvim
 
-Site config'i kopyala:
+# AI sohbet için (opsiyonel ama önerilen):
+GROQ_API_KEYS=gsk_birinci,gsk_ikinci,gsk_ucuncu
 
-```bash
-sudo cp /var/www/alerji-takvim/deploy/nginx/alerji-takvim.conf \
-        /etc/nginx/sites-available/alerji-takvim
+# Polen verisi için (opsiyonel — yoksa Open-Meteo kullanılır):
+POLLEN_API_KEYS=AIza_birinci,AIza_ikinci
+
+# Premium ödeme:
+PAYMENT_MODE=simulate         # 'simulate' (test) veya 'iyzico' (canlı)
 ```
 
-Domain'i ve yolu düzenle:
+Tam ayarlar için [`backend/.env.example`](backend/.env.example).
 
+### 4. Frontend (ayrı terminal)
 ```bash
-sudo nano /etc/nginx/sites-available/alerji-takvim
-# server_name → kendi domain'in
-# root → /var/www/alerji-takvim/frontend/dist  (zaten doğru)
+cd frontend
+npm install
+npm run dev                 # http://localhost:5173
 ```
 
-Aktive et:
+Uygulamayı tarayıcıda Vite'ın verdiği adreste açın.
 
+### 5. Sağlık kontrolü
 ```bash
-sudo ln -s /etc/nginx/sites-available/alerji-takvim /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default
-
-# Syntax kontrolü
-sudo nginx -t
-
-# Yeniden yükle
-sudo systemctl reload nginx
-```
-
-Test et:
-
-```bash
-# Aynı sunucudan
-curl -I http://localhost/
-curl http://localhost/api/pollen?lat=41.01\&lng=28.97\&days=1 | head
-
-# Dışarıdan (domain hazırsa)
-curl -I http://alerji-takvim.com/
-```
-
-## 6. HTTPS (Let's Encrypt)
-
-```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d alerji-takvim.com -d www.alerji-takvim.com
-
-# Otomatik yenileme test
-sudo certbot renew --dry-run
-```
-
-Certbot Nginx config'ini otomatik 443'e çevirir, HTTP→HTTPS redirect ekler.
-
-## 7. Güvenlik duvarı
-
-```bash
-sudo ufw allow 'OpenSSH'
-sudo ufw allow 'Nginx Full'   # 80 + 443
-sudo ufw enable
-sudo ufw status
-```
-
-**Önemli:** Backend portu 3001 dışarıya AÇIK olmamalı. UFW default deny olduğu için zaten kapalı, ama ekstra güvenlik için Nginx config'inde sadece `127.0.0.1:3001`'i dinliyor — direkt erişim mümkün değil.
-
-## 8. Yeni deploy (subsequent updates)
-
-```bash
-cd /var/www/alerji-takvim
-git pull
-
-# Backend güncellendiyse
-cd backend && npm install --omit=dev && cd ..
-pm2 reload alerji-takvim-backend     # zero-downtime
-
-# Frontend güncellendiyse
-cd frontend && npm install && npm run build && cd ..
-sudo systemctl reload nginx          # opsiyonel — dist/ değişti, cache reload
-```
-
-## 9. İzleme & debug
-
-```bash
-# Backend canlı log
-pm2 logs alerji-takvim-backend
-
-# Backend metrics
-pm2 monit
-
-# Nginx erişim log
-sudo tail -f /var/log/nginx/alerji-takvim.access.log
-
-# Nginx hata log
-sudo tail -f /var/log/nginx/alerji-takvim.error.log
-
-# Pollen anahtar durumu (token gerekli)
-curl -H "Authorization: Bearer <token>" http://localhost/api/pollen/status
-```
-
-## 10. Yedekleme
-
-Önemli dosyalar:
-- `/var/www/alerji-takvim/backend/.env` — gizli anahtarlar
-- `/var/www/alerji-takvim/backend/data/users.json` — kullanıcı veritabanı
-- `/var/www/alerji-takvim/data/vector-store.json` — RAG vektörleri (yeniden üretilebilir)
-
-```bash
-# Cron ile günlük yedek
-0 3 * * * tar -czf /home/ubuntu/backups/alerji-$(date +\%F).tar.gz \
-  /var/www/alerji-takvim/backend/.env \
-  /var/www/alerji-takvim/backend/data/
+curl http://localhost:3001/api/health
+# → {"status":"ok","database":true}
 ```
 
 ---
 
-## Sorun giderme
+## 📜 API uçları
 
-| Belirti | Nedenler |
-|---|---|
-| Frontend yükleniyor ama `/api` 502 | PM2 down → `pm2 status`, `pm2 logs` |
-| `/api` 404 | Nginx `location /api/` yok, syntax hatası → `sudo nginx -t` |
-| React Router refresh'te 404 | `try_files $uri /index.html` eksik → site config'e bak |
-| Pollen "veri yok" | `.env` `POLLEN_API_KEYS` boş veya ikisi de kotada → `/api/pollen/status` |
-| Chatbot Türkçe çıkmıyor | Groq model değişti → log'a bak; `GROQ_MODELS` listesini kontrol et |
-| 502 Bad Gateway | Backend port yanlış → `ecosystem.config.cjs` `PORT` ↔ Nginx `proxy_pass` aynı mı |
+| Yöntem  | URL                              | Açıklama                       | Auth |
+| ------- | -------------------------------- | ------------------------------ | ---- |
+| GET     | `/`                              | Servis bilgisi                 | —    |
+| GET     | `/api/health`                    | Sağlık kontrolü (DB ping)      | —    |
+| POST    | `/api/register`                  | Kayıt                          | —    |
+| POST    | `/api/login`                     | Giriş                          | —    |
+| GET     | `/api/me`                        | Oturum sahibi                  | ✅   |
+| PUT     | `/api/profile`                   | Profil güncelle                | ✅   |
+| PUT     | `/api/favorites`                 | Favoriler                      | ✅   |
+| DELETE  | `/api/account`                   | Hesap sil                      | ✅   |
+| GET     | `/api/usage`                     | Plan + günlük kullanım         | ⚪   |
+| GET     | `/api/membership/plans`          | Plan + fiyat                   | —    |
+| POST    | `/api/membership/checkout`       | Ödeme başlat                   | ✅   |
+| POST    | `/api/membership/confirm`        | Ödemeyi doğrula → premium      | ✅   |
+| POST    | `/api/membership/cancel`         | Premium iptal                  | ✅   |
+| GET     | `/api/pollen?lat&lng&days`       | Polen verisi (kotalı)          | ⚪   |
+| GET     | `/api/pollen/status`             | Anahtar yönetimi durumu        | ✅   |
+| POST    | `/api/chat`                      | AI sohbet (kotalı)             | ⚪   |
+
+⚪ opsiyonel — token varsa üye akışı, yoksa misafir akışı.
+
+**Kota dolduğunda yanıt** (HTTP 429):
+```json
+{
+  "error": "Günlük hakkınız doldu...",
+  "code": "QUOTA_EXCEEDED",
+  "resource": "chat",
+  "plan": "free",
+  "limit": 5,
+  "used": 5,
+  "action": "upgrade"
+}
+```
+
+---
+
+## 📁 Proje yapısı
+
+```
+alerji-takvim/
+├── backend/
+│   ├── server.js              # giriş noktası (dinleme + graceful shutdown)
+│   ├── app.js                 # Express uygulama fabrikası
+│   ├── config/                # env doğrulama, plan limitleri
+│   ├── db/                    # pg pool (TLS destekli), schema.sql, migrate
+│   ├── middleware/            # security, auth, quota, errorHandler
+│   ├── routes/                # auth, usage, membership, pollen, chat
+│   ├── services/              # users, usage (atomik kota), chat
+│   ├── utils/                 # ApiError, asyncHandler, validation, billing
+│   ├── prompts/               # AI sistem promptu kurucusu
+│   ├── payments/              # iyzico (simüle ↔ canlı)
+│   ├── tools/                 # polen orchestrator + sağlayıcılar
+│   ├── groqKeyManager.js      # Groq anahtar/model fallback matrisi
+│   └── test/                  # node:test + pg-mem
+├── frontend/
+│   ├── src/
+│   │   ├── main.jsx · App.jsx
+│   │   ├── pages/CleanDashboard.jsx
+│   │   ├── context/           # Theme, Auth, Usage, Pollen
+│   │   ├── components/dashboard/   # Chatbot, MapSelector, ...
+│   │   ├── components/membership/  # AccountMenu, AuthModal, UpgradeModal
+│   │   ├── api/client.js      # tek fetch sarmalayıcısı
+│   │   └── index.css          # token tabanlı tema
+│   └── public/favicon.svg
+├── rag/                       # bilimsel makaleler için RAG retriever
+├── data/                      # vector-store.json (RAG vektör mağaza)
+├── deploy/                    # nginx örnek konfig
+├── docs/                      # detaylı belgeler (aşağıya bak)
+├── DEPLOY.md
+└── ecosystem.config.cjs       # PM2 konfigürasyonu
+```
+
+---
+
+## 🧪 Test
+
+```bash
+cd backend
+npm test                       # node:test + pg-mem (gerçek Postgres gerekmez)
+```
+
+**4 test, 4 geçti** — kullanıcı CRUD + premium yaşam döngüsü + atomik kota
+(misafir/ücretsiz/premium + bağımsız sayaçlar + limit=0 edge case).
+
+---
+
+## 🛡️ Güvenlik
+
+- Şifreler **bcrypt** (salt rounds = 10).
+- JWT **7 gün**; sır `config/env.js`'ten gelir, **üretimde zorunlu** (yoksa
+  açılış durur).
+- **helmet** güvenlik header'ları + **express-rate-limit** (genel + auth özel).
+- **CORS allowlist** — prod'da `CORS_ORIGINS` boşsa uyarı basılır.
+- **app.set('trust proxy', N)** — X-Forwarded-For sahteciliğine karşı sınırlı.
+- Tüm AI ve harici API anahtarları yalnızca sunucuda (`.env`); istemciye sızmaz.
+- **PostgreSQL TLS** — yönetilen sağlayıcılar için tam sertifika doğrulaması
+  (MITM koruması):
+  ```env
+  DATABASE_SSL=true
+  DATABASE_CA_CERT=/path/to/ca.pem   # sağlayıcı özel CA kullanıyorsa
+  ```
+
+---
+
+## 🎨 Tasarım sistemi
+
+Token tabanlı; açık ve koyu temalar aynı CSS değişken isimlerini kullanır:
+
+- **Birincil sage** `#5F8A48` (açık) · `#9CC281` (koyu)
+- **Sıcak beyaz yüzeyler** `#FFFDF7` (klinik `#FFFFFF` değil)
+- **Katmanlı sıcak-tonlu gölgeler** + üst-parlaklık inset
+- **Üstten nazik gradient aydınlanma** + ince film greni dokusu (SVG fractal noise)
+- **Inter** fontu, -0.006em letter-spacing
+
+---
+
+## 🗺️ Yol haritası
+
+- [ ] E-posta doğrulama (kayıt sonrası onay maili)
+- [ ] Şifre sıfırlama (token ile reset link)
+- [ ] Hesaba bağlı alerjen senkronizasyonu (şu an localStorage'da)
+- [ ] Push bildirim (yüksek riskli günlerde uyarı)
+- [ ] Premium yıllık plan (mevcut: aylık)
+- [ ] Admin paneli
+- [ ] E2E testler (Playwright)
+- [ ] PWA desteği (offline cache + ana ekrana ekleme)
+
+---
+
+## 📚 Belgeler
+
+| Dosya | İçerik |
+| --- | --- |
+| [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | Gereksinim → kod eşlemesi (6/6 ✓) |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Mimari + veri modeli + akışlar + tasarım kararları |
+| [`docs/TESTING.md`](docs/TESTING.md) | Test stratejisi ve çalıştırma talimatları |
+| [`docs/PROJECT_REPORT.md`](docs/PROJECT_REPORT.md) | Kapsamlı proje raporu |
+| [`docs/PROJE_ANALIZ_RAPORU.pdf`](docs/PROJE_ANALIZ_RAPORU.pdf) | Sunulabilir PDF rapor |
+| [`docs/KOD_DOKUMANTASYONU.md`](docs/KOD_DOKUMANTASYONU.md) | Her dosya, her fonksiyon |
+| [`docs/TEMEL_KOD_REHBERI.md`](docs/TEMEL_KOD_REHBERI.md) | Çekirdek dosyalar için kısa rehber |
+| [`docs/AlerjiTakip_Sunum.pptx`](docs/AlerjiTakip_Sunum.pptx) | Sunum (14 slayt) |
+| [`DEPLOY.md`](DEPLOY.md) | AWS EC2 + Nginx + PM2 deployment |
+
+---
+
+## 📊 İstatistikler
+
+- **16** REST endpoint
+- **3** veritabanı tablosu (`users`, `usage_daily`, `payments`)
+- **4 / 4** otomatik test geçti
+- **2** polen sağlayıcı fallback (Google → Open-Meteo)
+- **4** AI modeli (anahtar × model matrisi)
+- **81** Türkiye ili
+
+---
+
+## 📄 Lisans
+
+MIT — Detay için `LICENSE` dosyasına bakın.
+
+---
+
+## 🙏 Katkı
+
+PR'lar memnuniyetle karşılanır. Büyük değişiklikler için önce bir issue açın.
+Kod stiline ve testlere bağlı kalın.
